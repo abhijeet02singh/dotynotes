@@ -1,26 +1,36 @@
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
 
 group = 'com.dotynotes.overlay'
 version = '1.0.0'
 
-def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
-apply from: expoModulesCorePlugin
-applyKotlinExpoModulesCorePlugin()
+expoModule {
+  canBePublished false
+}
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
 
 android {
   namespace "com.dotynotes.overlay"
+  compileSdk safeExtGet("compileSdkVersion", 36)
+
   defaultConfig {
+    minSdk safeExtGet("minSdkVersion", 24)
+    targetSdk safeExtGet("targetSdkVersion", 36)
     versionCode 1
     versionName "1.0.0"
   }
+
   lintOptions {
     abortOnError false
   }
 }
 
 dependencies {
-  implementation project(':expo-modules-core')
-  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7"
-  implementation "androidx.core:core-ktx:1.12.0"
+  implementation "androidx.core:core-ktx:1.15.0"
 }
+

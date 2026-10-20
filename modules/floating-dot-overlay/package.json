@@ -1,0 +1,11 @@
+{
+  "name": "floating-dot-overlay",
+  "version": "1.0.0",
+  "description": "Native Android floating dot overlay module for DotyNotes",
+  "main": "index.js",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-module"
+  ]
+}
