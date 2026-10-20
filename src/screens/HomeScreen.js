@@ -19,6 +19,7 @@ import EmptyState from '../components/EmptyState';
 import FloatingActionButton from '../components/FloatingActionButton';
 import NoteEditorModal from '../components/NoteEditorModal';
 import BottomNavigation from '../components/BottomNavigation';
+import FloatingDotScreen from './FloatingDotScreen';
 import {
   initDatabase,
   getAllNotesAsync,
@@ -223,78 +224,89 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* Scrollable Content */}
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Search bar */}
-          <SearchBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onClear={() => setSearchQuery('')}
+        {currentNav === 'floating' ? (
+          <FloatingDotScreen
+            onBackToNotes={() => {
+              setCurrentNav('notes');
+              loadNotesFromDb();
+            }}
           />
-
-          {/* Category Filter Tabs */}
-          <CategoryTabs
-            activeTab={activeTab}
-            onSelectTab={setActiveTab}
-            counts={counts}
-          />
-
-          {/* Section Heading & SQLite status badge */}
-          <View style={styles.sectionHeaderRow}>
-            <View>
-              <Text style={styles.sectionTitle}>{getSectionTitle()}</Text>
-              <Text style={styles.sectionSubtitle}>
-                {searchQuery.trim().length > 0
-                  ? `Filtered by "${searchQuery}"`
-                  : 'Tap any card to view details or edit'}
-              </Text>
-            </View>
-
-            {/* Offline SQLite Status Badge */}
-            <View
-              style={styles.storageBadge}
-              accessibilityLabel="Offline SQLite database active"
+        ) : (
+          <>
+            {/* Scrollable Content */}
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
             >
-              <View style={styles.storageIndicatorDot} />
-              <Text style={styles.storageBadgeText}>SQLITE SAVED</Text>
-            </View>
-          </View>
+              {/* Search bar */}
+              <SearchBar
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onClear={() => setSearchQuery('')}
+              />
 
-          {/* Loading Indicator or Notes Grid / Empty State */}
-          {isLoading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={THEME.colors.primary} />
-              <Text style={styles.loadingText}>Reading notes from SQLite...</Text>
-            </View>
-          ) : filteredNotes.length > 0 ? (
-            <NotesGrid
-              notes={filteredNotes}
-              onNotePress={(note) => setSelectedNote(note)}
-            />
-          ) : (
-            <EmptyState
-              isSearchActive={searchQuery.trim().length > 0}
-              activeTab={activeTab}
-              onActionPress={() => {
-                if (searchQuery.trim().length > 0) {
-                  setSearchQuery('');
-                } else if (activeTab !== 'all') {
-                  setActiveTab('all');
-                } else {
-                  handleStartCreate();
-                }
-              }}
-            />
-          )}
-        </ScrollView>
+              {/* Category Filter Tabs */}
+              <CategoryTabs
+                activeTab={activeTab}
+                onSelectTab={setActiveTab}
+                counts={counts}
+              />
 
-        {/* Floating Action Button */}
-        <FloatingActionButton onPress={handleStartCreate} />
+              {/* Section Heading & SQLite status badge */}
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>{getSectionTitle()}</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    {searchQuery.trim().length > 0
+                      ? `Filtered by "${searchQuery}"`
+                      : 'Tap any card to view details or edit'}
+                  </Text>
+                </View>
+
+                {/* Offline SQLite Status Badge */}
+                <View
+                  style={styles.storageBadge}
+                  accessibilityLabel="Offline SQLite database active"
+                >
+                  <View style={styles.storageIndicatorDot} />
+                  <Text style={styles.storageBadgeText}>SQLITE SAVED</Text>
+                </View>
+              </View>
+
+              {/* Loading Indicator or Notes Grid / Empty State */}
+              {isLoading ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator size="large" color={THEME.colors.primary} />
+                  <Text style={styles.loadingText}>Reading notes from SQLite...</Text>
+                </View>
+              ) : filteredNotes.length > 0 ? (
+                <NotesGrid
+                  notes={filteredNotes}
+                  onNotePress={(note) => setSelectedNote(note)}
+                />
+              ) : (
+                <EmptyState
+                  isSearchActive={searchQuery.trim().length > 0}
+                  activeTab={activeTab}
+                  onActionPress={() => {
+                    if (searchQuery.trim().length > 0) {
+                      setSearchQuery('');
+                    } else if (activeTab !== 'all') {
+                      setActiveTab('all');
+                    } else {
+                      handleStartCreate();
+                    }
+                  }}
+                />
+              )}
+            </ScrollView>
+
+            {/* Floating Action Button */}
+            <FloatingActionButton onPress={handleStartCreate} />
+          </>
+        )}
 
         {/* Bottom Navigation */}
         <BottomNavigation
@@ -304,6 +316,7 @@ export default function HomeScreen() {
             if (navKey === 'notes') {
               setActiveTab('all');
               setSearchQuery('');
+              loadNotesFromDb();
             }
           }}
         />

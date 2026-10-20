@@ -1,0 +1,7 @@
+{
+  "name": "FloatingDotOverlay",
+  "platforms": ["android"],
+  "android": {
+    "modules": ["com.dotynotes.overlay.FloatingDotModule"]
+  }
+}
