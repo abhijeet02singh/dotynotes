@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   StyleSheet,
@@ -9,44 +9,102 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { THEME } from '../constants/theme';
 
-export default function NoteEditorModal({ visible, onClose, onSave }) {
+export default function NoteEditorModal({
+  visible,
+  onClose,
+  onSave,
+  noteToEdit = null,
+  onDelete = null,
+}) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [tag, setTag] = useState('Quick');
   const [selectedColor, setSelectedColor] = useState('purple');
   const [isPinned, setIsPinned] = useState(false);
+  const [isArchived, setIsArchived] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSave = () => {
+  // Synchronize state when modal opens or noteToEdit changes
+  useEffect(() => {
+    if (visible) {
+      if (noteToEdit) {
+        setTitle(noteToEdit.title || '');
+        setContent(noteToEdit.content || '');
+        setTag(noteToEdit.tag || 'General');
+        setSelectedColor(noteToEdit.colorSchemeId || 'purple');
+        setIsPinned(Boolean(noteToEdit.isPinned));
+        setIsArchived(Boolean(noteToEdit.isArchived));
+      } else {
+        setTitle('');
+        setContent('');
+        setTag('Quick');
+        setSelectedColor('purple');
+        setIsPinned(false);
+        setIsArchived(false);
+      }
+    }
+  }, [visible, noteToEdit]);
+
+  const handleSave = async () => {
     if (!title.trim() && !content.trim()) {
-      onClose();
+      Alert.alert('Empty Note', 'Please provide a title or some content for the note.');
       return;
     }
 
-    onSave({
-      id: `session-note-${Date.now()}`,
-      title: title.trim() || 'Untitled Note',
-      content: content.trim() || 'No additional content',
-      tag: tag.trim() || 'Quick',
-      colorSchemeId: selectedColor,
-      isPinned,
-      isArchived: false,
-      updatedAt: 'Just now',
-      dateLabel: 'Just now',
-    });
+    try {
+      setIsSubmitting(true);
+      await onSave({
+        title: title.trim() || 'Untitled Note',
+        content: content.trim(),
+        tag: tag.trim() || 'General',
+        colorSchemeId: selectedColor,
+        isPinned,
+        isArchived,
+      });
+      onClose();
+    } catch (err) {
+      Alert.alert('Database Error', 'Failed to save note: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-    // Reset inputs
-    setTitle('');
-    setContent('');
-    setIsPinned(false);
-    onClose();
+  const handleDelete = () => {
+    if (!noteToEdit || !onDelete) return;
+
+    Alert.alert(
+      'Delete Note',
+      `Are you sure you want to permanently delete "${title || 'this note'}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsSubmitting(true);
+              await onDelete(noteToEdit.id);
+              onClose();
+            } catch (err) {
+              Alert.alert('Delete Error', 'Failed to delete note: ' + (err.message || ''));
+            } finally {
+              setIsSubmitting(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const currentColor =
     THEME.colors.pastels.find((p) => p.id === selectedColor) ||
     THEME.colors.pastels[0];
+
+  const isEditMode = Boolean(noteToEdit);
 
   return (
     <Modal
@@ -62,24 +120,30 @@ export default function NoteEditorModal({ visible, onClose, onSave }) {
         <View style={styles.sheetContainer}>
           {/* Header */}
           <View style={styles.header}>
-            <View>
-              <Text style={styles.sheetTitle}>Create Quick Note</Text>
+            <View style={styles.headerTitleGroup}>
+              <Text style={styles.sheetTitle}>
+                {isEditMode ? 'Edit Note' : 'Create Quick Note'}
+              </Text>
               <Text style={styles.sessionNotice}>
-                ⚠️ UI Preview: notes exist for this session only (no storage yet)
+                💾 Offline Persistent • Saved directly to SQLite
               </Text>
             </View>
 
             <TouchableOpacity
               onPress={onClose}
               style={styles.closeButton}
-              accessibilityLabel="Close editor"
+              accessibilityLabel="Close note editor"
               accessibilityRole="button"
             >
               <Text style={styles.closeIcon}>✕</Text>
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={styles.body}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
             {/* Color selection row */}
             <Text style={styles.label}>Sticky Color</Text>
             <View style={styles.colorPaletteRow}>
@@ -110,7 +174,7 @@ export default function NoteEditorModal({ visible, onClose, onSave }) {
                 styles.titleInput,
                 { backgroundColor: currentColor.bg, borderColor: currentColor.border },
               ]}
-              placeholder="e.g. Grocery list, ideas..."
+              placeholder="e.g. Grocery list, ideas, architecture..."
               placeholderTextColor={THEME.colors.textMuted}
               value={title}
               onChangeText={setTitle}
@@ -124,7 +188,7 @@ export default function NoteEditorModal({ visible, onClose, onSave }) {
                 styles.contentInput,
                 { backgroundColor: currentColor.bg, borderColor: currentColor.border },
               ]}
-              placeholder="Write your thought here..."
+              placeholder="Write your thoughts here..."
               placeholderTextColor={THEME.colors.textMuted}
               value={content}
               onChangeText={setContent}
@@ -134,52 +198,90 @@ export default function NoteEditorModal({ visible, onClose, onSave }) {
               accessibilityLabel="Note Content"
             />
 
-            {/* Tag & Pin controls */}
+            {/* Tag & Action Toggles */}
             <View style={styles.optionsRow}>
               <View style={styles.tagInputWrapper}>
                 <Text style={styles.label}>Tag</Text>
                 <TextInput
                   style={styles.tagInput}
-                  placeholder="e.g. Work, Idea"
+                  placeholder="e.g. Work, Ideas, Tasks"
                   placeholderTextColor={THEME.colors.textMuted}
                   value={tag}
                   onChangeText={setTag}
                 />
               </View>
 
-              <TouchableOpacity
-                style={[styles.pinToggle, isPinned && styles.pinToggleActive]}
-                onPress={() => setIsPinned(!isPinned)}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: isPinned }}
-                accessibilityLabel="Pin this note"
-              >
-                <Text style={styles.pinToggleText}>
-                  {isPinned ? '📌 Pinned' : '📍 Pin to top'}
-                </Text>
-              </TouchableOpacity>
+              <View style={styles.togglesGroup}>
+                <TouchableOpacity
+                  style={[styles.toggleBtn, isPinned && styles.toggleBtnActive]}
+                  onPress={() => setIsPinned(!isPinned)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: isPinned }}
+                  accessibilityLabel="Pin this note"
+                >
+                  <Text style={styles.toggleBtnText}>
+                    {isPinned ? '📌 Pinned' : '📍 Pin'}
+                  </Text>
+                </TouchableOpacity>
+
+                {isEditMode && (
+                  <TouchableOpacity
+                    style={[styles.toggleBtn, isArchived && styles.toggleBtnArchived]}
+                    onPress={() => setIsArchived(!isArchived)}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: isArchived }}
+                    accessibilityLabel="Archive this note"
+                  >
+                    <Text style={styles.toggleBtnText}>
+                      {isArchived ? '🗂️ Archived' : '📥 Archive'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           </ScrollView>
 
-          {/* Action buttons */}
+          {/* Action buttons footer */}
           <View style={styles.footer}>
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={onClose}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel"
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
+            {isEditMode && onDelete && (
+              <TouchableOpacity
+                style={styles.deleteButton}
+                onPress={handleDelete}
+                disabled={isSubmitting}
+                accessibilityRole="button"
+                accessibilityLabel="Delete note"
+              >
+                <Text style={styles.deleteButtonText}>🗑️ Delete</Text>
+              </TouchableOpacity>
+            )}
 
-            <TouchableOpacity
-              style={styles.saveButton}
-              onPress={handleSave}
-              accessibilityRole="button"
-              accessibilityLabel="Add note to preview"
-            >
-              <Text style={styles.saveButtonText}>Add to Preview</Text>
-            </TouchableOpacity>
+            <View style={styles.footerRight}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={onClose}
+                disabled={isSubmitting}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.saveButton, isSubmitting && styles.saveButtonDisabled]}
+                onPress={handleSave}
+                disabled={isSubmitting}
+                accessibilityRole="button"
+                accessibilityLabel={isEditMode ? 'Save changes to SQLite' : 'Save note to SQLite'}
+              >
+                <Text style={styles.saveButtonText}>
+                  {isSubmitting
+                    ? 'Saving...'
+                    : isEditMode
+                    ? 'Save Changes'
+                    : 'Save Note'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -190,7 +292,7 @@ export default function NoteEditorModal({ visible, onClose, onSave }) {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
     justifyContent: 'flex-end',
   },
   sheetContainer: {
@@ -200,7 +302,7 @@ const styles = StyleSheet.create({
     paddingTop: THEME.spacing.lg,
     paddingHorizontal: THEME.spacing.lg,
     paddingBottom: Platform.OS === 'ios' ? 34 : THEME.spacing.lg,
-    maxHeight: '85%',
+    maxHeight: '90%',
     ...THEME.shadows.card,
   },
   header: {
@@ -209,14 +311,19 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: THEME.spacing.md,
   },
+  headerTitleGroup: {
+    flex: 1,
+    marginRight: THEME.spacing.md,
+  },
   sheetTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '800',
     color: THEME.colors.textPrimary,
   },
   sessionNotice: {
     fontSize: 11,
-    color: THEME.colors.textMuted,
+    color: THEME.colors.primary,
+    fontWeight: '600',
     marginTop: 2,
   },
   closeButton: {
@@ -236,7 +343,7 @@ const styles = StyleSheet.create({
     marginVertical: THEME.spacing.xs,
   },
   label: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: THEME.colors.textSecondary,
     marginBottom: 6,
@@ -304,7 +411,11 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     backgroundColor: THEME.colors.background,
   },
-  pinToggle: {
+  togglesGroup: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  toggleBtn: {
     paddingHorizontal: THEME.spacing.md,
     paddingVertical: 10,
     borderRadius: THEME.borderRadius.md,
@@ -313,31 +424,54 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 40,
   },
-  pinToggleActive: {
+  toggleBtnActive: {
     backgroundColor: THEME.colors.primarySoft,
     borderColor: THEME.colors.primary,
   },
-  pinToggleText: {
+  toggleBtnArchived: {
+    backgroundColor: 'rgba(100, 116, 139, 0.15)',
+    borderColor: THEME.colors.archived,
+  },
+  toggleBtnText: {
     fontSize: 12,
     fontWeight: '600',
     color: THEME.colors.textPrimary,
   },
   footer: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: THEME.spacing.md,
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: THEME.spacing.md,
     paddingTop: THEME.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: THEME.colors.borderLight,
   },
+  footerRight: {
+    flexDirection: 'row',
+    gap: THEME.spacing.sm,
+    alignItems: 'center',
+    marginLeft: 'auto',
+  },
+  deleteButton: {
+    paddingVertical: 10,
+    paddingHorizontal: THEME.spacing.md,
+    borderRadius: THEME.borderRadius.md,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
+  deleteButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.colors.danger,
+  },
   cancelButton: {
-    paddingVertical: 12,
-    paddingHorizontal: THEME.spacing.lg,
+    paddingVertical: 10,
+    paddingHorizontal: THEME.spacing.md,
     borderRadius: THEME.borderRadius.full,
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 44,
   },
   cancelButtonText: {
     fontSize: 14,
@@ -346,12 +480,16 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     backgroundColor: THEME.colors.primary,
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: THEME.spacing.xl,
     borderRadius: THEME.borderRadius.full,
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 44,
     ...THEME.shadows.subtle,
+  },
+  saveButtonDisabled: {
+    opacity: 0.6,
   },
   saveButtonText: {
     fontSize: 14,
