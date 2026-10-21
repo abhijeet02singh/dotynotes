@@ -37,7 +37,7 @@ class FloatingDotService : Service() {
     }
 
     private lateinit var windowManager: WindowManager
-    private lateinit var dbHelper: OverlayDatabaseHelper
+    private lateinit var repository: OverlayNoteRepository
     private var floatingDotView: FloatingDotView? = null
     private var quickNotesView: QuickNotesOverlayView? = null
     private var isPanelOpen = false
@@ -47,7 +47,7 @@ class FloatingDotService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        dbHelper = OverlayDatabaseHelper(this)
+        repository = OverlayNoteRepository.getInstance(this)
         createNotificationChannel()
     }
 
@@ -195,7 +195,7 @@ class FloatingDotService : Service() {
 
         quickNotesView = QuickNotesOverlayView(
             context = this,
-            dbHelper = dbHelper,
+            repository = repository,
             onClose = { closeQuickNotesPanel() },
             onNoteSavedCallback = {
                 // Refresh panel notes after saving

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.os.bundleOf
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -12,7 +13,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * Expo Native Module bridge for FloatingDotOverlay.
  * 
  * Provides safe JS methods to query overlay permissions, open Android
- * Settings, and start or stop the native floating service.
+ * Settings, start or stop the native floating service, synchronize note data,
+ * and execute automated database recovery.
  */
 class FloatingDotModule : Module() {
 
@@ -22,8 +24,19 @@ class FloatingDotModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("FloatingDotOverlay")
 
+        Events("onQuickNoteSaved")
+
+        OnCreate {
+            OverlayNoteRepository.getInstance(context).setOnNoteSavedListener { noteJson ->
+                try {
+                    sendEvent("onQuickNoteSaved", bundleOf("note" to noteJson))
+                } catch (e: Exception) {
+                    // Suppress if listeners not yet registered
+                }
+            }
+        }
+
         Function("isSupported") {
-            // Overlay WindowManager is supported on Android
             true
         }
 
@@ -77,6 +90,30 @@ class FloatingDotModule : Module() {
 
         Function("isOverlayRunning") {
             FloatingDotService.isRunning
+        }
+
+        Function("repairDatabase") {
+            val report = DatabaseRecoveryHelper.repairDatabase(context)
+            report.toMap()
+        }
+
+        Function("createDatabaseBackup") {
+            val backupPath = DatabaseRecoveryHelper.createSafeBackup(context)
+            backupPath ?: ""
+        }
+
+        Function("syncNotesToOverlay") { notesJson: String ->
+            OverlayNoteRepository.getInstance(context).syncRecentNotes(notesJson)
+            true
+        }
+
+        Function("getPendingOverlayNotes") {
+            OverlayNoteRepository.getInstance(context).getPendingNotesJson()
+        }
+
+        Function("clearPendingOverlayNotes") {
+            OverlayNoteRepository.getInstance(context).clearPendingNotes()
+            true
         }
     }
 }

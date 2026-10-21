@@ -75,3 +75,80 @@ export function isFloatingOverlayRunning() {
   }
   return false;
 }
+
+/**
+ * Repairs SQLite database by creating a safe backup, extracting notes,
+ * normalizing WAL/SHM conflicts, and verifying SQLite integrity.
+ */
+export async function repairDatabaseAsync() {
+  if (NativeOverlay && typeof NativeOverlay.repairDatabase === 'function') {
+    return await NativeOverlay.repairDatabase();
+  }
+  return { success: false, message: 'Native module not available' };
+}
+
+/**
+ * Creates a timestamped safe backup of all SQLite files.
+ */
+export async function createDatabaseBackupAsync() {
+  if (NativeOverlay && typeof NativeOverlay.createDatabaseBackup === 'function') {
+    return await NativeOverlay.createDatabaseBackup();
+  }
+  return null;
+}
+
+/**
+ * Synchronizes the top recent notes into the native overlay's cache.
+ */
+export async function syncNotesToOverlayAsync(notes) {
+  if (NativeOverlay && typeof NativeOverlay.syncNotesToOverlay === 'function') {
+    try {
+      const notesJson = JSON.stringify(notes || []);
+      return await NativeOverlay.syncNotesToOverlay(notesJson);
+    } catch (e) {
+      console.warn('Error syncing notes to overlay cache:', e);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Retrieves pending notes captured while using the floating overlay.
+ */
+export async function getPendingOverlayNotesAsync() {
+  if (NativeOverlay && typeof NativeOverlay.getPendingOverlayNotes === 'function') {
+    try {
+      return await NativeOverlay.getPendingOverlayNotes();
+    } catch (e) {
+      console.warn('Error getting pending overlay notes:', e);
+      return '[]';
+    }
+  }
+  return '[]';
+}
+
+/**
+ * Clears pending overlay notes once they are safely inserted into SQLite.
+ */
+export async function clearPendingOverlayNotesAsync() {
+  if (NativeOverlay && typeof NativeOverlay.clearPendingOverlayNotes === 'function') {
+    try {
+      return await NativeOverlay.clearPendingOverlayNotes();
+    } catch (e) {
+      console.warn('Error clearing pending overlay notes:', e);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Listens for new notes saved from the floating overlay.
+ */
+export function addOverlayNoteListener(callback) {
+  if (NativeOverlay && typeof NativeOverlay.addListener === 'function') {
+    return NativeOverlay.addListener('onQuickNoteSaved', callback);
+  }
+  return { remove: () => {} };
+}

@@ -10,6 +10,7 @@ import {
   StatusBar as RNStatusBar,
   ActivityIndicator,
   Alert,
+  AppState,
 } from 'react-native';
 import AppHeader from '../components/AppHeader';
 import SearchBar from '../components/SearchBar';
@@ -29,6 +30,7 @@ import {
   togglePinNoteAsync,
   toggleArchiveNoteAsync,
 } from '../services/notesDb';
+import { addOverlayNoteListener } from '../../modules/floating-dot-overlay';
 import { THEME } from '../constants/theme';
 
 export default function HomeScreen() {
@@ -63,6 +65,25 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadNotesFromDb();
+
+    // Refresh when app comes to foreground (e.g. after using floating overlay)
+    const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        loadNotesFromDb();
+      }
+    });
+
+    // Refresh if floating overlay emits note saved event while app is alive
+    const overlaySub = addOverlayNoteListener(() => {
+      loadNotesFromDb();
+    });
+
+    return () => {
+      appStateSub.remove();
+      if (overlaySub && typeof overlaySub.remove === 'function') {
+        overlaySub.remove();
+      }
+    };
   }, [loadNotesFromDb]);
 
   // Compute live counts for category tabs

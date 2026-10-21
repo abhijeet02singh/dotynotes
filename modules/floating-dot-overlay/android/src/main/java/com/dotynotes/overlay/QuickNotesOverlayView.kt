@@ -19,7 +19,7 @@ import android.widget.*
  */
 class QuickNotesOverlayView(
     context: Context,
-    private val dbHelper: OverlayDatabaseHelper,
+    private val repository: OverlayNoteRepository,
     private val onClose: () -> Unit,
     private val onNoteSavedCallback: () -> Unit
 ) : FrameLayout(context) {
@@ -140,7 +140,7 @@ class QuickNotesOverlayView(
                 val title = titleInput.text.toString().trim()
                 val content = contentInput.text.toString().trim()
                 if (title.isNotEmpty() || content.isNotEmpty()) {
-                    val success = dbHelper.insertQuickNote(title, content)
+                    val success = repository.saveQuickNote(title, content)
                     if (success) {
                         Toast.makeText(context, "Note saved to DotyNotes!", Toast.LENGTH_SHORT).show()
                         titleInput.setText("")
@@ -195,7 +195,7 @@ class QuickNotesOverlayView(
 
     fun refreshRecentNotes() {
         recentNotesContainer.removeAllViews()
-        val recentNotes = dbHelper.getRecentNotes(4)
+        val recentNotes = repository.getRecentNotes(4)
 
         if (recentNotes.isEmpty()) {
             val emptyText = TextView(context).apply {

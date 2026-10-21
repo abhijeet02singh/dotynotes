@@ -1,4 +1,11 @@
 import * as SQLite from 'expo-sqlite';
+import {
+  isNativeModuleAvailable,
+  repairDatabaseAsync,
+  syncNotesToOverlayAsync,
+  getPendingOverlayNotesAsync,
+  clearPendingOverlayNotesAsync,
+} from '../../modules/floating-dot-overlay';
 
 const DB_NAME = 'dotynotes.db';
 let dbInstance = null;
@@ -14,13 +21,19 @@ export async function getDatabase() {
 }
 
 /**
- * Initialize the database schema safely using WAL mode.
- * Creates the notes table and helpful performance indexes.
- * Seeds initial starter notes on first launch if the table is empty.
+ * Setup database schema and performance indexes safely.
  */
-export async function initDatabase() {
-  const db = await getDatabase();
+async function setupSchema(db) {
+  // Integrity check diagnostic (without exposing user data)
+  try {
+    const checkRow = await db.getFirstAsync('PRAGMA integrity_check;');
+    const result = checkRow?.integrity_check || Object.values(checkRow || {})[0];
+    console.log('[DotyNotes DB] SQLite integrity check:', result);
+  } catch (e) {
+    console.warn('[DotyNotes DB] Integrity check query warning:', e.message);
+  }
 
+  // Ensure WAL mode and schema tables/indexes
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS notes (
@@ -38,19 +51,121 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes (isArchived);
     CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes (updatedAt DESC);
   `);
+}
 
-  // Check if first-run seeding is needed
+/**
+ * Flushes any notes captured by the floating overlay into the SQLite database.
+ */
+export async function flushPendingOverlayNotes(dbTarget) {
+  if (!isNativeModuleAvailable) return;
+  try {
+    const pendingJson = await getPendingOverlayNotesAsync();
+    if (!pendingJson || pendingJson === '[]') return;
+
+    const pendingNotes = JSON.parse(pendingJson);
+    if (!Array.isArray(pendingNotes) || pendingNotes.length === 0) return;
+
+    console.log(`[DotyNotes DB] Ingesting ${pendingNotes.length} pending note(s) from overlay...`);
+    const db = dbTarget || (await getDatabase());
+
+    for (const note of pendingNotes) {
+      if (!note.id) continue;
+      await db.runAsync(
+        `INSERT OR IGNORE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          note.id,
+          note.title || 'Quick Note',
+          note.content || '',
+          note.colorSchemeId || 'purple',
+          note.tag || 'Floating',
+          note.isPinned ? 1 : 0,
+          note.isArchived ? 1 : 0,
+          Number(note.createdAt) || Date.now(),
+          Number(note.updatedAt) || Date.now(),
+        ]
+      );
+    }
+
+    await clearPendingOverlayNotesAsync();
+    console.log('[DotyNotes DB] Pending overlay notes ingested and staging queue cleared');
+    await syncRecentNotesToOverlay(db);
+  } catch (e) {
+    console.warn('[DotyNotes DB] Failed to flush pending overlay notes:', e.message);
+  }
+}
+
+/**
+ * Synchronizes recent notes to the native overlay cache for instant access without SQLite locks.
+ */
+export async function syncRecentNotesToOverlay(dbTarget) {
+  if (!isNativeModuleAvailable) return;
+  try {
+    const db = dbTarget || (await getDatabase());
+    const rows = await db.getAllAsync(
+      `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, updatedAt
+       FROM notes WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC LIMIT 5;`
+    );
+    await syncNotesToOverlayAsync(rows);
+  } catch (e) {
+    console.warn('[DotyNotes DB] Could not sync notes to overlay cache:', e.message);
+  }
+}
+
+/**
+ * Initialize the database schema safely using WAL mode.
+ * Automatically detects and repairs malformed database artifacts
+ * without data loss.
+ */
+export async function initDatabase() {
+  let db;
+  try {
+    db = await getDatabase();
+    await setupSchema(db);
+  } catch (err) {
+    console.warn('[DotyNotes DB] Database initialization encountered error:', err.message);
+
+    if (isNativeModuleAvailable) {
+      console.log('[DotyNotes DB] Invoking automated native database recovery and WAL normalization...');
+      try {
+        const report = await repairDatabaseAsync();
+        console.log('[DotyNotes DB] Recovery report:', JSON.stringify(report));
+      } catch (repairErr) {
+        console.error('[DotyNotes DB] Native recovery failed:', repairErr.message);
+      }
+
+      // Reset cached connection to cleanly re-open the repaired database
+      if (dbInstance) {
+        try {
+          await dbInstance.closeAsync();
+        } catch (_) {}
+        dbInstance = null;
+      }
+
+      db = await getDatabase();
+      await setupSchema(db);
+    } else {
+      throw err;
+    }
+  }
+
+  // Ingest any notes captured in the floating overlay
+  await flushPendingOverlayNotes(db);
+
+  // Check if first-run starter notes are needed
   const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
   if (countRow && countRow.count === 0) {
     await seedInitialNotes(db);
   }
+
+  // Update overlay cache
+  await syncRecentNotesToOverlay(db);
 
   return db;
 }
 
 /**
  * Seeds a few helpful welcome notes into the SQLite database on first launch.
- * These are fully editable, pinnable, and deletable by the user.
  */
 async function seedInitialNotes(db) {
   const now = Date.now();
@@ -101,7 +216,6 @@ async function seedInitialNotes(db) {
 
 /**
  * Load all notes from SQLite, ordered with pinned notes first, then latest updated.
- * Uses parameterized query.
  */
 export async function getAllNotesAsync() {
   const db = await getDatabase();
@@ -114,7 +228,6 @@ export async function getAllNotesAsync() {
 
 /**
  * Create a new note and persist it to SQLite.
- * Uses parameterized SQL query.
  */
 export async function createNoteAsync({
   title,
@@ -144,12 +257,12 @@ export async function createNoteAsync({
     ]
   );
 
+  await syncRecentNotesToOverlay(db);
   return getNoteByIdAsync(id);
 }
 
 /**
  * Fetch a single note by ID.
- * Uses parameterized query.
  */
 export async function getNoteByIdAsync(id) {
   const db = await getDatabase();
@@ -162,7 +275,6 @@ export async function getNoteByIdAsync(id) {
 
 /**
  * Update an existing note in SQLite.
- * Uses parameterized SQL query.
  */
 export async function updateNoteAsync(id, {
   title,
@@ -191,12 +303,12 @@ export async function updateNoteAsync(id, {
     ]
   );
 
+  await syncRecentNotesToOverlay(db);
   return getNoteByIdAsync(id);
 }
 
 /**
  * Toggle note pinned status in SQLite.
- * Uses parameterized SQL query.
  */
 export async function togglePinNoteAsync(id, currentPinned) {
   const db = await getDatabase();
@@ -208,12 +320,12 @@ export async function togglePinNoteAsync(id, currentPinned) {
     [newPinned, now, id]
   );
 
+  await syncRecentNotesToOverlay(db);
   return getNoteByIdAsync(id);
 }
 
 /**
  * Toggle note archive status in SQLite.
- * Uses parameterized SQL query.
  */
 export async function toggleArchiveNoteAsync(id, currentArchived) {
   const db = await getDatabase();
@@ -225,12 +337,12 @@ export async function toggleArchiveNoteAsync(id, currentArchived) {
     [newArchived, now, id]
   );
 
+  await syncRecentNotesToOverlay(db);
   return getNoteByIdAsync(id);
 }
 
 /**
  * Delete a note permanently from SQLite.
- * Uses parameterized SQL query.
  */
 export async function deleteNoteAsync(id) {
   const db = await getDatabase();
@@ -238,6 +350,7 @@ export async function deleteNoteAsync(id) {
     `DELETE FROM notes WHERE id = ?;`,
     [id]
   );
+  await syncRecentNotesToOverlay(db);
   return true;
 }
 
