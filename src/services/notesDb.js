@@ -22,18 +22,22 @@ export async function getDatabase() {
 
 /**
  * Setup database schema and performance indexes safely.
+ * Does NOT run integrity_check here — that belongs in a post-startup
+ * diagnostic, not in the blocking startup hot path.
  */
 async function setupSchema(db) {
-  // Integrity check diagnostic (without exposing user data)
+  // Checkpoint any pending WAL frames into the main database file first.
+  // This consolidates any frames written by a previous session before we
+  // set journal_mode, preventing stale WAL frame accumulation.
   try {
-    const checkRow = await db.getFirstAsync('PRAGMA integrity_check;');
-    const result = checkRow?.integrity_check || Object.values(checkRow || {})[0];
-    console.log('[DotyNotes DB] SQLite integrity check:', result);
+    await db.runAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+    console.log('[DotyNotes DB] WAL checkpoint completed');
   } catch (e) {
-    console.warn('[DotyNotes DB] Integrity check query warning:', e.message);
+    // Non-fatal: WAL may be empty or not yet in use
+    console.log('[DotyNotes DB] WAL checkpoint skipped:', e.message);
   }
 
-  // Ensure WAL mode and schema tables/indexes
+  // Set WAL mode and create schema tables/indexes
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS notes (
@@ -51,6 +55,23 @@ async function setupSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes (isArchived);
     CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes (updatedAt DESC);
   `);
+}
+
+/**
+ * Runs PRAGMA integrity_check asynchronously after startup — safe to call
+ * once the schema has been confirmed. Never blocks the hot startup path.
+ */
+async function runIntegrityCheckAsync(db) {
+  try {
+    const checkRow = await db.getFirstAsync('PRAGMA integrity_check;');
+    const result = checkRow?.integrity_check || Object.values(checkRow || {})[0];
+    console.log('[DotyNotes DB] Post-startup integrity check:', result);
+    if (result && result.toLowerCase() !== 'ok') {
+      console.warn('[DotyNotes DB] Integrity check found issues:', result);
+    }
+  } catch (e) {
+    console.warn('[DotyNotes DB] Post-startup integrity check warning:', e.message);
+  }
 }
 
 /**
@@ -113,55 +134,90 @@ export async function syncRecentNotesToOverlay(dbTarget) {
 }
 
 /**
- * Initialize the database schema safely using WAL mode.
- * Automatically detects and repairs malformed database artifacts
- * without data loss.
+ * Initialize the database schema safely.
+ *
+ * Strategy:
+ *  1. Try to open + setup schema normally.
+ *  2. On any failure, close the cached connection and retry once.
+ *     This resolves transient WAL lock errors without triggering repair.
+ *  3. Only if the retry also fails AND the native module is available,
+ *     invoke repairDatabase() which safely deletes stale WAL/SHM files
+ *     (using expo-sqlite, not Android system SQLite) so expo-sqlite can
+ *     re-open the main .db cleanly.
+ *  4. Run a post-startup integrity check asynchronously — never in the
+ *     blocking startup path.
  */
 export async function initDatabase() {
   let db;
+
+  // ── Attempt 1: Normal open ────────────────────────────────────────────
   try {
     db = await getDatabase();
     await setupSchema(db);
-  } catch (err) {
-    console.warn('[DotyNotes DB] Database initialization encountered error:', err.message);
+  } catch (firstErr) {
+    console.warn('[DotyNotes DB] First open attempt failed:', firstErr.message);
 
-    if (isNativeModuleAvailable) {
-      console.log('[DotyNotes DB] Invoking automated native database recovery and WAL normalization...');
-      try {
-        const report = await repairDatabaseAsync();
-        console.log('[DotyNotes DB] Recovery report:', JSON.stringify(report));
-      } catch (repairErr) {
-        console.error('[DotyNotes DB] Native recovery failed:', repairErr.message);
-      }
+    // Close and discard the possibly-corrupt cached connection before retrying
+    if (dbInstance) {
+      try { await dbInstance.closeAsync(); } catch (_) {}
+      dbInstance = null;
+    }
 
-      // Reset cached connection to cleanly re-open the repaired database
-      if (dbInstance) {
-        try {
-          await dbInstance.closeAsync();
-        } catch (_) {}
-        dbInstance = null;
-      }
-
+    // ── Attempt 2: Retry once (resolves transient WAL lock races) ─────
+    try {
+      console.log('[DotyNotes DB] Retrying database open after connection reset...');
       db = await getDatabase();
       await setupSchema(db);
-    } else {
-      throw err;
+      console.log('[DotyNotes DB] Retry succeeded');
+    } catch (retryErr) {
+      console.warn('[DotyNotes DB] Retry also failed:', retryErr.message);
+
+      // ── Attempt 3: Native repair (deletes stale WAL/SHM only) ────────
+      if (isNativeModuleAvailable) {
+        console.log('[DotyNotes DB] Invoking native WAL cleanup repair...');
+        try {
+          const report = await repairDatabaseAsync();
+          console.log('[DotyNotes DB] Repair report:', JSON.stringify(report));
+        } catch (repairErr) {
+          console.error('[DotyNotes DB] Native repair invocation failed:', repairErr.message);
+        }
+
+        // Close cached connection again before final open attempt
+        if (dbInstance) {
+          try { await dbInstance.closeAsync(); } catch (_) {}
+          dbInstance = null;
+        }
+
+        db = await getDatabase();
+        await setupSchema(db);
+      } else {
+        // Running in Expo Go — native repair unavailable.
+        // Expo Go stores SQLite in a sandboxed path per-app; a WAL artifact
+        // from a dev build cannot survive across installs. Surface the error.
+        console.error('[DotyNotes DB] Cannot repair in Expo Go — native module not available.');
+        throw retryErr;
+      }
     }
   }
 
   // Ingest any notes captured in the floating overlay
   await flushPendingOverlayNotes(db);
 
-  // Check if first-run starter notes are needed
+  // Seed welcome notes on first-ever launch
   const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
   if (countRow && countRow.count === 0) {
     await seedInitialNotes(db);
   }
 
-  // Update overlay cache
+  // Update overlay cache with latest notes
   await syncRecentNotesToOverlay(db);
 
+  // Run integrity check asynchronously — never blocks startup
+  // (uses setTimeout 0 to push to next event-loop tick)
+  setTimeout(() => runIntegrityCheckAsync(db), 0);
+
   return db;
+
 }
 
 /**
