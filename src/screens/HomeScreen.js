@@ -31,6 +31,7 @@ import {
   togglePinNoteAsync,
   toggleArchiveNoteAsync,
   flushPendingOverlayMutations,
+  exportAllNotesToJsonAsync,
 } from '../services/notesDb';
 import {
   addOverlayNoteListener,
@@ -38,6 +39,7 @@ import {
   isNativeModuleAvailable,
   repairDatabaseAsync,
   performSafeRepairAsync,
+  createDatabaseBackupAsync,
   cleanupStaleWalFilesAsync,
 } from '../../modules/floating-dot-overlay';
 import { THEME } from '../constants/theme';
@@ -52,6 +54,7 @@ export default function HomeScreen() {
   
   // Modals state
   const [isEditorVisible, setIsEditorVisible] = useState(false);
+  const [isStorageModalVisible, setIsStorageModalVisible] = useState(false);
   const [noteToEdit, setNoteToEdit] = useState(null);
   const [selectedNote, setSelectedNote] = useState(null);
   const [currentNav, setCurrentNav] = useState('notes');
@@ -104,6 +107,44 @@ export default function HomeScreen() {
     } catch (e) {
       setIsLoading(false);
       Alert.alert('Diagnostic Error', e.message);
+    }
+  };
+
+  // Create an explicit safety backup of all SQLite files & staging queues
+  const handleCreateBackup = async () => {
+    try {
+      setIsLoading(true);
+      const backupPath = await createDatabaseBackupAsync();
+      setIsLoading(false);
+      if (backupPath) {
+        const folderName = backupPath.split(/[/\\]/).pop();
+        Alert.alert(
+          'Backup Created Successfully',
+          `Full file-copy backup saved:\n\n${folderName}\n\nAll SQLite database files, WAL, and overlay mutation queues have been safely archived.`
+        );
+      } else {
+        Alert.alert('Backup Notice', 'Native backup module unavailable in Expo Go.');
+      }
+    } catch (err) {
+      setIsLoading(false);
+      Alert.alert('Backup Error', err.message || 'Failed creating backup.');
+    }
+  };
+
+  // Export all notes to JSON payload
+  const handleExportNotes = async () => {
+    try {
+      setIsLoading(true);
+      const json = await exportAllNotesToJsonAsync();
+      setIsLoading(false);
+      const parsed = JSON.parse(json);
+      Alert.alert(
+        'Notes Exported',
+        `Successfully exported ${parsed.totalNotes} notes in standard DotyNotes JSON format.\n\nAll titles, content, timestamps, and tags are preserved.`
+      );
+    } catch (err) {
+      setIsLoading(false);
+      Alert.alert('Export Error', err.message || 'Failed exporting notes.');
     }
   };
 
@@ -274,10 +315,11 @@ export default function HomeScreen() {
   return (
     <View style={styles.safeArea}>
       <View style={styles.container}>
-        {/* Header with branding and total counts */}
+        {/* Header with branding, total counts, and storage modal trigger */}
         <AppHeader
           totalCount={counts.all}
           pinnedCount={counts.pinned}
+          onStoragePress={() => setIsStorageModalVisible(true)}
         />
 
         {/* Database Error Banner if SQLite fails */}
@@ -544,6 +586,77 @@ export default function HomeScreen() {
             </View>
           </Modal>
         )}
+
+        {/* Storage & Safety Backup Modal */}
+        <Modal
+          visible={isStorageModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsStorageModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.storageModalCard}>
+              <View style={styles.storageModalHeader}>
+                <Text style={styles.storageModalTitle}>Storage & Backup 🛡️</Text>
+                <TouchableOpacity
+                  style={styles.closeBtn}
+                  onPress={() => setIsStorageModalVisible(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close storage modal"
+                >
+                  <Text style={styles.closeBtnText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.storageInfoBox}>
+                <Text style={styles.storageInfoTitle}>Authoritative Storage</Text>
+                <Text style={styles.storageInfoText}>Engine: expo-sqlite (WAL Mode)</Text>
+                <Text style={styles.storageInfoText}>
+                  Total Notes: {counts.all} active ({counts.pinned} pinned, {counts.archived} archived)
+                </Text>
+                <Text style={styles.storageInfoStatus}>● Single Source of Truth (Connected)</Text>
+              </View>
+
+              <View style={styles.storageActionsColumn}>
+                <TouchableOpacity
+                  style={styles.storageActionButton}
+                  onPress={handleCreateBackup}
+                >
+                  <Text style={styles.storageActionIcon}>💾</Text>
+                  <View style={styles.storageActionTextContainer}>
+                    <Text style={styles.storageActionTitle}>Create File Backup</Text>
+                    <Text style={styles.storageActionDesc}>Archive raw SQLite files & queues safely</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.storageActionButton}
+                  onPress={handleExportNotes}
+                >
+                  <Text style={styles.storageActionIcon}>📤</Text>
+                  <View style={styles.storageActionTextContainer}>
+                    <Text style={styles.storageActionTitle}>Export Notes (JSON)</Text>
+                    <Text style={styles.storageActionDesc}>Export structured backup for safekeeping</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.storageActionButton, styles.repairActionButton]}
+                  onPress={() => {
+                    setIsStorageModalVisible(false);
+                    handleDiagnoseAndRecover();
+                  }}
+                >
+                  <Text style={styles.storageActionIcon}>🔧</Text>
+                  <View style={styles.storageActionTextContainer}>
+                    <Text style={styles.storageActionTitle}>Diagnose & Safe Repair</Text>
+                    <Text style={styles.storageActionDesc}>Harvest notes & clear any corrupted WAL state</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     </View>
   );
@@ -792,5 +905,98 @@ const styles = StyleSheet.create({
   },
   deleteActionBtnText: {
     color: THEME.colors.danger,
+  },
+  storageModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.borderRadius.xl,
+    padding: THEME.spacing.xl,
+    ...THEME.shadows.card,
+  },
+  storageModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: THEME.spacing.md,
+  },
+  storageModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: THEME.colors.textPrimary,
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: THEME.colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: THEME.colors.textSecondary,
+  },
+  storageInfoBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: THEME.borderRadius.md,
+    padding: THEME.spacing.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: THEME.spacing.lg,
+  },
+  storageInfoTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: THEME.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  storageInfoText: {
+    fontSize: 12,
+    color: THEME.colors.textSecondary,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  storageInfoStatus: {
+    fontSize: 12,
+    color: '#059669',
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  storageActionsColumn: {
+    gap: 10,
+  },
+  storageActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: THEME.borderRadius.md,
+    padding: THEME.spacing.md,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  repairActionButton: {
+    backgroundColor: '#FAF5FF',
+    borderColor: '#E9D5FF',
+  },
+  storageActionIcon: {
+    fontSize: 22,
+    marginRight: 12,
+  },
+  storageActionTextContainer: {
+    flex: 1,
+  },
+  storageActionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.colors.textPrimary,
+  },
+  storageActionDesc: {
+    fontSize: 11,
+    color: THEME.colors.textMuted,
+    marginTop: 1,
   },
 });

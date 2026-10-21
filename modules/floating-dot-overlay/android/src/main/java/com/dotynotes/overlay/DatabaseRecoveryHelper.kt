@@ -332,7 +332,35 @@ object DatabaseRecoveryHelper {
         val liveShm = File(liveDir, "dotynotes.db-shm")
         val liveDb = File(liveDir, "dotynotes.db")
 
-        // Delete corrupted live WAL and SHM files
+        // SAFETY VERIFICATION: Ensure the backup directory exists and backed up files are verified
+        if (!backupDir.exists() || backupDir.listFiles()?.isEmpty() == true) {
+            Log.e(TAG, "SAFETY BLOCK: Backup directory is empty or missing! Aborting deletion.")
+            return RecoveryReport(
+                success = false,
+                message = "Backup verification failed. Live files preserved.",
+                backupDirectory = backupPath,
+                recoveredNotesJson = "[]",
+                recoveredNoteCount = 0,
+                integrityCheckResult = "backup_empty"
+            )
+        }
+
+        if (liveWal.exists()) {
+            val backupWal = File(backupDir, "dotynotes.db-wal")
+            if (!backupWal.exists() || backupWal.length() != liveWal.length()) {
+                Log.e(TAG, "SAFETY BLOCK: Live WAL file is not properly backed up! Aborting.")
+                return RecoveryReport(
+                    success = false,
+                    message = "WAL backup verification failed. Live files preserved.",
+                    backupDirectory = backupPath,
+                    recoveredNotesJson = "[]",
+                    recoveredNoteCount = 0,
+                    integrityCheckResult = "wal_backup_mismatch"
+                )
+            }
+        }
+
+        // Delete corrupted live WAL and SHM files after verification
         if (liveWal.exists()) {
             val deletedWal = liveWal.delete()
             Log.i(TAG, "SafeRepair: Corrupt live -wal deleted: $deletedWal")

@@ -25,7 +25,7 @@ export function BrandLogo() {
   );
 }
 
-export default function AppHeader({ totalCount = 0, pinnedCount = 0 }) {
+export default function AppHeader({ totalCount = 0, pinnedCount = 0, onStoragePress }) {
   return (
     <View style={styles.headerContainer}>
       <View style={styles.topRow}>
@@ -40,13 +40,19 @@ export default function AppHeader({ totalCount = 0, pinnedCount = 0 }) {
           </View>
         </View>
 
-        {/* Quick status pill */}
-        <View style={styles.statusPill} accessibilityLabel={`${totalCount} total notes, ${pinnedCount} pinned`}>
+        {/* Quick status pill / storage button */}
+        <TouchableOpacity
+          style={styles.statusPill}
+          onPress={onStoragePress}
+          activeOpacity={onStoragePress ? 0.7 : 1}
+          accessibilityRole="button"
+          accessibilityLabel={`Storage & Backup: ${totalCount} total notes, ${pinnedCount} pinned`}
+        >
           <View style={styles.activeIndicatorDot} />
           <Text style={styles.statusPillText}>
-            {totalCount} {totalCount === 1 ? 'note' : 'notes'}
+            {totalCount} {totalCount === 1 ? 'note' : 'notes'} 💾
           </Text>
-        </View>
+        </TouchableOpacity>
       </View>
 
       {/* Summary greeting & stats */}

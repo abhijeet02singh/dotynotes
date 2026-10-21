@@ -60,6 +60,10 @@ async function setupSchema(db) {
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS app_metadata (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes (isPinned);
     CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes (isArchived);
     CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes (updatedAt DESC);
@@ -180,7 +184,7 @@ export async function syncRecentNotesToOverlay(dbTarget) {
     const db = dbTarget || (await getDatabase());
     const rows = await db.getAllAsync(
       `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt
-       FROM notes WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC LIMIT 5;`
+       FROM notes WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC LIMIT 10;`
     );
     await syncNotesToOverlayAsync(rows);
   } catch (e) {
@@ -276,10 +280,16 @@ export async function initDatabase() {
   // Ingest any notes / deletions captured in the floating overlay
   await flushPendingOverlayMutations(db);
 
-  // Seed welcome notes only if table is completely empty
-  const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
-  if (countRow && countRow.count === 0) {
-    await seedInitialNotes(db);
+  // Seed welcome notes ONLY on a fresh installation, NEVER over recoverable user data
+  const metaRow = await db.getFirstAsync("SELECT value FROM app_metadata WHERE key = 'has_seeded_initial_notes';");
+  if (!metaRow) {
+    const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
+    if (countRow && countRow.count === 0) {
+      await seedInitialNotes(db);
+    } else {
+      // Notes already exist; mark seeded so it never triggers
+      await db.runAsync("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');");
+    }
   }
 
   // Update overlay cache with latest notes
@@ -339,6 +349,11 @@ async function seedInitialNotes(db) {
       [n.id, n.title, n.content, n.colorSchemeId, n.tag, n.isPinned, n.isArchived, n.createdAt, n.updatedAt]
     );
   }
+
+  // Mark initial notes as seeded in persistent metadata
+  await db.runAsync(
+    `INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');`
+  );
 }
 
 /**
@@ -529,4 +544,67 @@ export function formatNoteDate(timestamp) {
   }
 
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Exports all user notes as a structured, versioned JSON payload.
+ * Useful for local backups, sharing, and disaster recovery.
+ */
+export async function exportAllNotesToJsonAsync() {
+  const db = await getDatabase();
+  const allNotes = await db.getAllAsync('SELECT * FROM notes ORDER BY createdAt ASC;');
+  const exportPayload = {
+    version: 1,
+    appName: 'DotyNotes',
+    storageEngine: 'expo-sqlite (WAL)',
+    exportedAt: Date.now(),
+    totalNotes: allNotes.length,
+    notes: allNotes.map(formatNoteRow),
+  };
+  return JSON.stringify(exportPayload, null, 2);
+}
+
+/**
+ * Restores notes from a JSON backup payload.
+ * Preserves all note IDs, timestamps, colors, tags, and pin/archive states.
+ */
+export async function importNotesFromJsonAsync(jsonStringOrObject) {
+  const payload = typeof jsonStringOrObject === 'string'
+    ? JSON.parse(jsonStringOrObject)
+    : jsonStringOrObject;
+
+  if (!payload || !Array.isArray(payload.notes)) {
+    throw new Error('Invalid backup file format: missing notes array');
+  }
+
+  const db = await getDatabase();
+  let importedCount = 0;
+
+  for (const note of payload.notes) {
+    if (!note.id || !note.title) continue;
+    await db.runAsync(
+      `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        note.id,
+        note.title,
+        note.content || '',
+        note.colorSchemeId || 'purple',
+        note.tag || 'General',
+        note.isPinned ? 1 : 0,
+        note.isArchived ? 1 : 0,
+        Number(note.createdAt) || Date.now(),
+        Number(note.updatedAt) || Date.now(),
+      ]
+    );
+    importedCount++;
+  }
+
+  // Ensure metadata marks database as active
+  await db.runAsync(
+    `INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');`
+  );
+
+  await syncRecentNotesToOverlay(db);
+  return { success: true, importedCount };
 }
