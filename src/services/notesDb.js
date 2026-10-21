@@ -2,7 +2,11 @@ import * as SQLite from 'expo-sqlite';
 import {
   isNativeModuleAvailable,
   createDatabaseBackupAsync,
+  performSafeRepairAsync,
+  repairDatabaseAsync,
   syncNotesToOverlayAsync,
+  getPendingOverlayMutationsAsync,
+  clearPendingOverlayMutationsAsync,
   getPendingOverlayNotesAsync,
   clearPendingOverlayNotesAsync,
 } from '../../modules/floating-dot-overlay';
@@ -12,6 +16,7 @@ let dbInstance = null;
 
 /**
  * Get or open the singleton SQLite database instance.
+ * Exclusively owned by expo-sqlite (libexpo-sqlite.so).
  */
 export async function getDatabase() {
   if (!dbInstance) {
@@ -79,46 +84,92 @@ async function runIntegrityCheckAsync(db) {
 }
 
 /**
- * Flushes any notes captured by the floating overlay into the SQLite database.
+ * Ingests all pending overlay mutations (creations, updates, deletions) into SQLite.
+ * Single source of truth: all persistent mutations land in dotynotes.db.
  */
-export async function flushPendingOverlayNotes(dbTarget) {
+export async function flushPendingOverlayMutations(dbTarget) {
   if (!isNativeModuleAvailable) return;
   try {
-    const pendingJson = await getPendingOverlayNotesAsync();
-    if (!pendingJson || pendingJson === '[]') return;
-
-    const pendingNotes = JSON.parse(pendingJson);
-    if (!Array.isArray(pendingNotes) || pendingNotes.length === 0) return;
-
-    console.log(`[DotyNotes DB] Ingesting ${pendingNotes.length} pending note(s) from overlay...`);
+    const mutations = await getPendingOverlayMutationsAsync();
     const db = dbTarget || (await getDatabase());
+    let hasChanges = false;
 
-    for (const note of pendingNotes) {
-      if (!note.id) continue;
-      await db.runAsync(
-        `INSERT OR IGNORE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          note.id,
-          note.title || 'Quick Note',
-          note.content || '',
-          note.colorSchemeId || 'purple',
-          note.tag || 'Floating',
-          note.isPinned ? 1 : 0,
-          note.isArchived ? 1 : 0,
-          Number(note.createdAt) || Date.now(),
-          Number(note.updatedAt) || Date.now(),
-        ]
-      );
+    // 1. Process pending deletions
+    if (Array.isArray(mutations.deletions) && mutations.deletions.length > 0) {
+      console.log(`[DotyNotes DB] Processing ${mutations.deletions.length} pending deletion(s)...`);
+      for (const id of mutations.deletions) {
+        if (!id) continue;
+        await db.runAsync(`DELETE FROM notes WHERE id = ?;`, [id]);
+      }
+      hasChanges = true;
     }
 
-    await clearPendingOverlayNotesAsync();
-    console.log('[DotyNotes DB] Pending overlay notes ingested and staging queue cleared');
-    await syncRecentNotesToOverlay(db);
+    // 2. Process pending note creations / updates
+    if (Array.isArray(mutations.notes) && mutations.notes.length > 0) {
+      console.log(`[DotyNotes DB] Ingesting ${mutations.notes.length} pending note(s) from overlay...`);
+      for (const note of mutations.notes) {
+        if (!note.id) continue;
+        await db.runAsync(
+          `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            note.id,
+            note.title || 'Quick Note',
+            note.content || '',
+            note.colorSchemeId || 'purple',
+            note.tag || 'Floating',
+            note.isPinned ? 1 : 0,
+            note.isArchived ? 1 : 0,
+            Number(note.createdAt) || Date.now(),
+            Number(note.updatedAt) || Date.now(),
+          ]
+        );
+      }
+      hasChanges = true;
+    }
+
+    // Also check legacy pending queue if present
+    const legacyPendingJson = await getPendingOverlayNotesAsync();
+    if (legacyPendingJson && legacyPendingJson !== '[]') {
+      try {
+        const legacyNotes = JSON.parse(legacyPendingJson);
+        if (Array.isArray(legacyNotes) && legacyNotes.length > 0) {
+          for (const note of legacyNotes) {
+            if (!note.id) continue;
+            await db.runAsync(
+              `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                note.id,
+                note.title || 'Quick Note',
+                note.content || '',
+                note.colorSchemeId || 'purple',
+                note.tag || 'Floating',
+                note.isPinned ? 1 : 0,
+                note.isArchived ? 1 : 0,
+                Number(note.createdAt) || Date.now(),
+                Number(note.updatedAt) || Date.now(),
+              ]
+            );
+          }
+          await clearPendingOverlayNotesAsync();
+          hasChanges = true;
+        }
+      } catch (_) {}
+    }
+
+    if (hasChanges) {
+      await clearPendingOverlayMutationsAsync();
+      console.log('[DotyNotes DB] Staging queues cleared; syncing latest state back to overlay...');
+      await syncRecentNotesToOverlay(db);
+    }
   } catch (e) {
-    console.warn('[DotyNotes DB] Failed to flush pending overlay notes:', e.message);
+    console.warn('[DotyNotes DB] Failed to flush pending overlay mutations:', e.message);
   }
 }
+
+// Keep legacy alias for existing calls
+export const flushPendingOverlayNotes = flushPendingOverlayMutations;
 
 /**
  * Synchronizes recent notes to the native overlay cache for instant access without SQLite locks.
@@ -128,7 +179,7 @@ export async function syncRecentNotesToOverlay(dbTarget) {
   try {
     const db = dbTarget || (await getDatabase());
     const rows = await db.getAllAsync(
-      `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, updatedAt
+      `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt
        FROM notes WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC LIMIT 5;`
     );
     await syncNotesToOverlayAsync(rows);
@@ -138,19 +189,7 @@ export async function syncRecentNotesToOverlay(dbTarget) {
 }
 
 /**
- * Initialize the database schema safely.
- *
- * Non-destructive strategy:
- *  1. Open the database and run schema setup.
- *  2. If that fails, close the cached connection and retry once.
- *     This resolves transient WAL lock errors without any file modification.
- *  3. If the retry also fails, close the connection, create a native
- *     file-copy backup of the database + WAL + SHM (without modifying
- *     anything), and surface a structured DB_NEEDS_REPAIR error so the
- *     UI can show a recovery prompt.
- *  4. NEVER auto-delete WAL/SHM files, NEVER silently recreate the database.
- *  5. Run a post-startup integrity check asynchronously — never in the
- *     blocking startup path.
+ * Initialize the database schema safely with automated data-preserving recovery.
  */
 export async function initDatabase() {
   let db;
@@ -161,57 +200,83 @@ export async function initDatabase() {
     await setupSchema(db);
   } catch (firstErr) {
     console.warn('[DotyNotes DB] First open attempt failed:', firstErr.message);
+    await closeDatabaseAsync();
 
-    // Close and discard the cached connection before retrying.
-    // This resolves transient WAL lock races without any file modification.
-    if (dbInstance) {
-      try { await dbInstance.closeAsync(); } catch (_) {}
-      dbInstance = null;
-    }
+    const isMalformed = firstErr.message?.toLowerCase().includes('malformed') ||
+                        firstErr.message?.toLowerCase().includes('corrupt');
 
-    // ── Attempt 2: Single retry after connection reset ────────────────
-    try {
-      console.log('[DotyNotes DB] Retrying database open after connection reset...');
-      db = await getDatabase();
-      await setupSchema(db);
-      console.log('[DotyNotes DB] Retry succeeded');
-    } catch (retryErr) {
-      // ── Both attempts failed — back up and surface error ─────────────
-      // Do NOT delete WAL/SHM. Do NOT recreate the database.
-      // Close the connection so the backup is taken consistently.
-      if (dbInstance) {
-        try { await dbInstance.closeAsync(); } catch (_) {}
-        dbInstance = null;
-      }
+    if (isNativeModuleAvailable && isMalformed) {
+      console.log('[DotyNotes DB] Detected database corruption. Initiating safe data-recovery repair...');
+      const repairReport = await performSafeRepairAsync();
+      console.log('[DotyNotes DB] Recovery report:', JSON.stringify(repairReport));
 
-      let backupLocation = null;
-      if (isNativeModuleAvailable) {
-        try {
-          backupLocation = await createDatabaseBackupAsync();
-          console.log('[DotyNotes DB] Diagnostic backup created at:', backupLocation);
-        } catch (backupErr) {
-          console.warn('[DotyNotes DB] Backup creation warning:', backupErr.message);
+      try {
+        db = await getDatabase();
+        await setupSchema(db);
+
+        // Restore harvested notes if present
+        if (repairReport.recoveredNotesJson) {
+          try {
+            const recovered = JSON.parse(repairReport.recoveredNotesJson);
+            if (Array.isArray(recovered) && recovered.length > 0) {
+              console.log(`[DotyNotes DB] Restoring ${recovered.length} recovered note(s)...`);
+              for (const note of recovered) {
+                if (!note.id) continue;
+                await db.runAsync(
+                  `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [
+                    note.id,
+                    note.title || 'Quick Note',
+                    note.content || '',
+                    note.colorSchemeId || 'purple',
+                    note.tag || 'General',
+                    note.isPinned ? 1 : 0,
+                    note.isArchived ? 1 : 0,
+                    Number(note.createdAt) || Date.now(),
+                    Number(note.updatedAt) || Date.now(),
+                  ]
+                );
+              }
+              console.log('[DotyNotes DB] All recovered notes successfully restored to database');
+            }
+          } catch (jsonErr) {
+            console.warn('[DotyNotes DB] Failed parsing recovered notes JSON:', jsonErr.message);
+          }
         }
-      } else {
-        console.warn('[DotyNotes DB] Native module not available — cannot create backup in Expo Go.');
+      } catch (postRepairErr) {
+        console.error('[DotyNotes DB] Failed reopening database after repair:', postRepairErr.message);
+        throw postRepairErr;
       }
-
-      // Attach structured context to the thrown error so the UI can
-      // display a meaningful recovery prompt to the user.
-      const recoveryError = new Error(
-        'SQLite database cannot be opened. Original files are preserved.\n' +
-        'Error: ' + retryErr.message
-      );
-      recoveryError.code = 'DB_NEEDS_REPAIR';
-      recoveryError.backupLocation = backupLocation;
-      throw recoveryError;
+    } else {
+      // Retry once after connection reset
+      try {
+        console.log('[DotyNotes DB] Retrying database open after connection reset...');
+        db = await getDatabase();
+        await setupSchema(db);
+      } catch (retryErr) {
+        await closeDatabaseAsync();
+        let backupLocation = null;
+        if (isNativeModuleAvailable) {
+          try {
+            backupLocation = await createDatabaseBackupAsync();
+          } catch (_) {}
+        }
+        const recoveryError = new Error(
+          'SQLite database cannot be opened. Original files are preserved.\n' +
+          'Error: ' + retryErr.message
+        );
+        recoveryError.code = 'DB_NEEDS_REPAIR';
+        recoveryError.backupLocation = backupLocation;
+        throw recoveryError;
+      }
     }
   }
 
-  // Ingest any notes captured in the floating overlay
-  await flushPendingOverlayNotes(db);
+  // Ingest any notes / deletions captured in the floating overlay
+  await flushPendingOverlayMutations(db);
 
-  // Seed welcome notes on first-ever launch
+  // Seed welcome notes only if table is completely empty
   const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
   if (countRow && countRow.count === 0) {
     await seedInitialNotes(db);
@@ -246,7 +311,7 @@ async function seedInitialNotes(db) {
     {
       id: 'welcome-2',
       title: 'Quick Tips & Gestures 💡',
-      content: '• Tap any note card to view or edit\n• Use the search bar to filter by title, body, or tag\n• Switch tabs to view Pinned or Archived notes',
+      content: '• Tap any note card to view or edit\n• Use the search bar to filter by title, body, or tag\n• Switch tabs to view Pinned or Archived notes\n• Use the Floating Dot to quickly take notes from any app!',
       colorSchemeId: 'mint',
       tag: 'Tips',
       isPinned: 1,

@@ -89,6 +89,25 @@ export async function repairDatabaseAsync() {
 }
 
 /**
+ * Performs automated safe recovery:
+ * 1. Backs up all DB & JSON staging files to a timestamped folder.
+ * 2. Harvests all recoverable notes.
+ * 3. Safely clears corrupted WAL/SHM files.
+ * 4. Returns recovered notes JSON array so JS can restore them.
+ */
+export async function performSafeRepairAsync() {
+  if (NativeOverlay && typeof NativeOverlay.performSafeRepair === 'function') {
+    try {
+      return await NativeOverlay.performSafeRepair();
+    } catch (e) {
+      console.warn('performSafeRepair error:', e);
+      return { success: false, message: e.message, recoveredNotesJson: '[]', recoveredNoteCount: 0 };
+    }
+  }
+  return { success: false, message: 'Native module not available', recoveredNotesJson: '[]', recoveredNoteCount: 0 };
+}
+
+/**
  * Creates a timestamped safe backup of all SQLite files (pure file copy).
  * Never opens a SQLite connection. Returns the backup directory path.
  */
@@ -100,14 +119,7 @@ export async function createDatabaseBackupAsync() {
 }
 
 /**
- * DESTRUCTIVE: Deletes live -wal and -shm files.
- *
- * Must only be called after ALL of:
- *  1. expo-sqlite connection has been closed (dbInstance.closeAsync() called)
- *  2. repairDatabaseAsync() confirmed recoveredNoteCount > 0 and backup exists
- *  3. The user has explicitly confirmed the repair action in the UI
- *
- * Returns { walDeleted, shmDeleted, mainDbExists }.
+ * Deletes live -wal and -shm files explicitly.
  */
 export async function cleanupStaleWalFilesAsync() {
   if (NativeOverlay && typeof NativeOverlay.cleanupStaleWalFiles === 'function') {
@@ -168,11 +180,52 @@ export async function clearPendingOverlayNotesAsync() {
 }
 
 /**
+ * Retrieves all pending mutations (creations, edits, deletions) from the overlay staging queue.
+ */
+export async function getPendingOverlayMutationsAsync() {
+  if (NativeOverlay && typeof NativeOverlay.getPendingOverlayMutations === 'function') {
+    try {
+      const json = await NativeOverlay.getPendingOverlayMutations();
+      return JSON.parse(json || '{"notes":[],"deletions":[]}');
+    } catch (e) {
+      console.warn('Error getting pending overlay mutations:', e);
+      return { notes: [], deletions: [] };
+    }
+  }
+  return { notes: [], deletions: [] };
+}
+
+/**
+ * Clears all pending mutations from the overlay staging queue.
+ */
+export async function clearPendingOverlayMutationsAsync() {
+  if (NativeOverlay && typeof NativeOverlay.clearPendingOverlayMutations === 'function') {
+    try {
+      return await NativeOverlay.clearPendingOverlayMutations();
+    } catch (e) {
+      console.warn('Error clearing pending overlay mutations:', e);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Listens for new notes saved from the floating overlay.
  */
 export function addOverlayNoteListener(callback) {
   if (NativeOverlay && typeof NativeOverlay.addListener === 'function') {
     return NativeOverlay.addListener('onQuickNoteSaved', callback);
+  }
+  return { remove: () => {} };
+}
+
+/**
+ * Listens for any note mutations (create, update, delete) from the floating overlay.
+ */
+export function addOverlayMutationListener(callback) {
+  if (NativeOverlay && typeof NativeOverlay.addListener === 'function') {
+    return NativeOverlay.addListener('onQuickNoteMutation', callback);
   }
   return { remove: () => {} };
 }

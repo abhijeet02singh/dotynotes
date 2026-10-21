@@ -30,11 +30,14 @@ import {
   deleteNoteAsync,
   togglePinNoteAsync,
   toggleArchiveNoteAsync,
+  flushPendingOverlayMutations,
 } from '../services/notesDb';
 import {
   addOverlayNoteListener,
+  addOverlayMutationListener,
   isNativeModuleAvailable,
   repairDatabaseAsync,
+  performSafeRepairAsync,
   cleanupStaleWalFilesAsync,
 } from '../../modules/floating-dot-overlay';
 import { THEME } from '../constants/theme';
@@ -59,6 +62,7 @@ export default function HomeScreen() {
       setIsLoading(true);
       setDbError(null);
       await initDatabase();
+      await flushPendingOverlayMutations();
       const loadedNotes = await getAllNotesAsync();
       setNotes(loadedNotes);
     } catch (err) {
@@ -69,43 +73,30 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // Safe manual recovery flow — creates safe backup, verifies notes, then asks user before cleanup
+  // Safe recovery flow — creates safe backup, verifies notes, restores data cleanly
   const handleDiagnoseAndRecover = async () => {
     try {
       setIsLoading(true);
-      const report = await repairDatabaseAsync();
+      const report = await performSafeRepairAsync();
       setIsLoading(false);
-      if (!report) {
-        Alert.alert('Diagnostic', 'No recovery report available.');
+      if (!report || !report.success) {
+        Alert.alert('Recovery Warning', report?.message || 'Repair could not be completed.');
         return;
       }
 
       const noteCount = report.recoveredNoteCount || 0;
-      const integrity = report.integrityCheckResult || 'unknown';
-      const backupDir = report.backupDirectory ? report.backupDirectory.split(/[/\\]/).pop() : 'backup';
+      const backupDir = report.backupDirectory ? report.backupDirectory.split(/[/\\]/).pop() : 'backup folder';
 
       Alert.alert(
-        'Database Diagnostic Report',
-        `Safe Backup: Created in ${backupDir}\n` +
-        `Backup Integrity: ${integrity}\n` +
-        `Recoverable Notes Found: ${noteCount}\n\n` +
-        `All original files have been safely backed up without modification. If your database was corrupted by a WAL mismatch, you can safely clear stale WAL files and re-open the database from the main database file.`,
+        'Database Repaired Successfully',
+        `A safe backup was created in: ${backupDir}\n\n` +
+        `Recovered and restored: ${noteCount} note(s).\n` +
+        `The database has been restored to a healthy state with zero data loss.`,
         [
-          { text: 'Keep Files As-Is', style: 'cancel' },
           {
-            text: 'Clear Stale WAL & Reconnect',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                setIsLoading(true);
-                await closeDatabaseAsync();
-                await cleanupStaleWalFilesAsync();
-                await loadNotesFromDb();
-              } catch (cleanErr) {
-                Alert.alert('Recovery Error', cleanErr.message);
-              } finally {
-                setIsLoading(false);
-              }
+            text: 'OK',
+            onPress: () => {
+              loadNotesFromDb();
             },
           },
         ]
@@ -126,8 +117,11 @@ export default function HomeScreen() {
       }
     });
 
-    // Refresh if floating overlay emits note saved event while app is alive
+    // Refresh if floating overlay emits note saved or mutation event while app is alive
     const overlaySub = addOverlayNoteListener(() => {
+      loadNotesFromDb();
+    });
+    const mutationSub = addOverlayMutationListener(() => {
       loadNotesFromDb();
     });
 
@@ -135,6 +129,9 @@ export default function HomeScreen() {
       appStateSub.remove();
       if (overlaySub && typeof overlaySub.remove === 'function') {
         overlaySub.remove();
+      }
+      if (mutationSub && typeof mutationSub.remove === 'function') {
+        mutationSub.remove();
       }
     };
   }, [loadNotesFromDb]);

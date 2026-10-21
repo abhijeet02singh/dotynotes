@@ -8,14 +8,13 @@ import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.view.WindowManager
 import android.widget.*
 
 /**
  * Compact Quick Notes Panel for System-Level Floating Overlay.
  * 
- * Provides an in-overlay editor to quickly type and save notes directly to
- * the shared 'dotynotes.db' SQLite database, plus a list of recent notes.
+ * Provides an in-overlay editor to quickly type, edit, and delete notes connected
+ * to the shared DotyNotes repository, with full real-time synchronization.
  */
 class QuickNotesOverlayView(
     context: Context,
@@ -28,6 +27,9 @@ class QuickNotesOverlayView(
     private val recentNotesContainer: LinearLayout
     private val titleInput: EditText
     private val contentInput: EditText
+    private val saveBtn: Button
+    private val cancelEditBtn: TextView
+    private var editingNoteId: String? = null
 
     init {
         // Main Card Container
@@ -121,8 +123,13 @@ class QuickNotesOverlayView(
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (8 * density).toInt())
         })
 
-        // --- 4. Save Button ---
-        val saveBtn = Button(context).apply {
+        // --- 4. Buttons Row (Save/Update + Cancel) ---
+        val buttonsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        saveBtn = Button(context).apply {
             text = "Save Note 💾"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -132,40 +139,44 @@ class QuickNotesOverlayView(
                 setColor(Color.parseColor("#6D28D9"))
                 cornerRadius = 20 * density
             }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (40 * density).toInt()
-            )
-            setOnClickListener {
-                val title = titleInput.text.toString().trim()
-                val content = contentInput.text.toString().trim()
-                if (title.isNotEmpty() || content.isNotEmpty()) {
-                    val success = repository.saveQuickNote(title, content)
-                    if (success) {
-                        Toast.makeText(context, "Note saved to DotyNotes!", Toast.LENGTH_SHORT).show()
-                        titleInput.setText("")
-                        contentInput.setText("")
-                        refreshRecentNotes()
-                        onNoteSavedCallback()
-                    } else {
-                        Toast.makeText(context, "Failed to save note", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(context, "Please enter some text", Toast.LENGTH_SHORT).show()
-                }
-            }
+            layoutParams = LinearLayout.LayoutParams(0, (40 * density).toInt(), 1f)
+            setOnClickListener { handleSaveOrUpdate() }
         }
-        card.addView(saveBtn)
 
-        // --- 5. Divider & Recent Notes Title ---
+        cancelEditBtn = TextView(context).apply {
+            text = "Cancel"
+            setTextColor(Color.parseColor("#64748B"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            val padH = (12 * density).toInt()
+            setPadding(padH, 0, padH, 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, (40 * density).toInt())
+            setOnClickListener { resetEditorState() }
+        }
+
+        buttonsRow.addView(saveBtn)
+        buttonsRow.addView(cancelEditBtn)
+        card.addView(buttonsRow)
+
+        // --- 5. Divider & Recent Notes Header ---
+        val sectionHeaderRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (12 * density).toInt(), 0, (6 * density).toInt())
+        }
+
         val sectionLabel = TextView(context).apply {
-            text = "RECENT NOTES"
+            text = "RECENT NOTES (TAP TO EDIT)"
             setTextColor(Color.parseColor("#94A3B8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, (12 * density).toInt(), 0, (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        card.addView(sectionLabel)
+
+        sectionHeaderRow.addView(sectionLabel)
+        card.addView(sectionHeaderRow)
 
         // --- 6. Recent Notes Scroll Area ---
         val scrollView = ScrollView(context).apply {
@@ -182,20 +193,81 @@ class QuickNotesOverlayView(
 
         // Add card to Root Frame
         val cardParams = LayoutParams(
-            (300 * density).toInt(),
+            (310 * density).toInt(),
             LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.CENTER
         }
         addView(card, cardParams)
 
-        // Populate notes on first view
+        // Listen for cache updates from React Native or other actions
+        repository.setOnRecentNotesUpdatedListener {
+            post { refreshRecentNotes() }
+        }
+
         refreshRecentNotes()
+    }
+
+    private fun handleSaveOrUpdate() {
+        val title = titleInput.text.toString().trim()
+        val content = contentInput.text.toString().trim()
+
+        if (title.isEmpty() && content.isEmpty()) {
+            Toast.makeText(context, "Please enter some text", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val currentEditId = editingNoteId
+        if (currentEditId != null) {
+            val success = repository.updateQuickNote(currentEditId, title, content)
+            if (success) {
+                Toast.makeText(context, "Note updated!", Toast.LENGTH_SHORT).show()
+                resetEditorState()
+                refreshRecentNotes()
+                onNoteSavedCallback()
+            } else {
+                Toast.makeText(context, "Failed to update note", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            val savedNote = repository.saveQuickNote(title, content)
+            if (savedNote != null) {
+                Toast.makeText(context, "Note saved to DotyNotes!", Toast.LENGTH_SHORT).show()
+                resetEditorState()
+                refreshRecentNotes()
+                onNoteSavedCallback()
+            } else {
+                Toast.makeText(context, "Failed to save note", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun startEditingNote(note: OverlayNoteRepository.OverlayNote) {
+        editingNoteId = note.id
+        titleInput.setText(note.title)
+        contentInput.setText(note.content)
+        titleInput.requestFocus()
+        titleInput.setSelection(titleInput.text.length)
+
+        saveBtn.text = "Update Note ✏️"
+        (saveBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#4338CA"))
+        cancelEditBtn.visibility = View.VISIBLE
+    }
+
+    private fun resetEditorState() {
+        editingNoteId = null
+        titleInput.setText("")
+        contentInput.setText("")
+        titleInput.clearFocus()
+        contentInput.clearFocus()
+
+        saveBtn.text = "Save Note 💾"
+        (saveBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#6D28D9"))
+        cancelEditBtn.visibility = View.GONE
     }
 
     fun refreshRecentNotes() {
         recentNotesContainer.removeAllViews()
-        val recentNotes = repository.getRecentNotes(4)
+        val recentNotes = repository.getRecentNotes(5)
 
         if (recentNotes.isEmpty()) {
             val emptyText = TextView(context).apply {
@@ -210,19 +282,30 @@ class QuickNotesOverlayView(
 
         for (note in recentNotes) {
             val noteCard = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#F3E8FF")) // Light lilac/purple pastel
-                    cornerRadius = 6 * density
+                    cornerRadius = 8 * density
                     setStroke((1 * density).toInt(), Color.parseColor("#DDD6FE"))
                 }
-                setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                setPadding((10 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
                     setMargins(0, 0, 0, (6 * density).toInt())
                 }
+                // Tap card to edit
+                setOnClickListener {
+                    startEditingNote(note)
+                }
+            }
+
+            // Left side text (Title + Content)
+            val textLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
 
             val noteTitle = TextView(context).apply {
@@ -242,10 +325,37 @@ class QuickNotesOverlayView(
                 ellipsize = TextUtils.TruncateAt.END
             }
 
-            noteCard.addView(noteTitle)
+            textLayout.addView(noteTitle)
             if (note.content.isNotEmpty()) {
-                noteCard.addView(noteSnippet)
+                textLayout.addView(noteSnippet)
             }
+            noteCard.addView(textLayout)
+
+            // Right side delete button
+            val deleteBtn = TextView(context).apply {
+                text = "🗑"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                gravity = Gravity.CENTER
+                val btnSize = (28 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(btnSize, btnSize)
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#FEE2E2"))
+                    cornerRadius = 14 * density
+                }
+                setOnClickListener {
+                    val success = repository.deleteQuickNote(note.id)
+                    if (success) {
+                        Toast.makeText(context, "Note deleted", Toast.LENGTH_SHORT).show()
+                        if (editingNoteId == note.id) {
+                            resetEditorState()
+                        }
+                        refreshRecentNotes()
+                        onNoteSavedCallback()
+                    }
+                }
+            }
+            noteCard.addView(deleteBtn)
+
             recentNotesContainer.addView(noteCard)
         }
     }

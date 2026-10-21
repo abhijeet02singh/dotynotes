@@ -24,12 +24,13 @@ class FloatingDotModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("FloatingDotOverlay")
 
-        Events("onQuickNoteSaved")
+        Events("onQuickNoteSaved", "onQuickNoteMutation")
 
         OnCreate {
-            OverlayNoteRepository.getInstance(context).setOnNoteSavedListener { noteJson ->
+            OverlayNoteRepository.getInstance(context).setOnMutationListener { type, data ->
                 try {
-                    sendEvent("onQuickNoteSaved", bundleOf("note" to noteJson))
+                    sendEvent("onQuickNoteMutation", bundleOf("type" to type, "data" to data))
+                    sendEvent("onQuickNoteSaved", bundleOf("note" to data))
                 } catch (e: Exception) {
                     // Suppress if listeners not yet registered
                 }
@@ -97,6 +98,11 @@ class FloatingDotModule : Module() {
             report.toMap()
         }
 
+        AsyncFunction("performSafeRepair") {
+            val report = DatabaseRecoveryHelper.performSafeRepair(context)
+            report.toMap()
+        }
+
         AsyncFunction("createDatabaseBackup") {
             val backupPath = DatabaseRecoveryHelper.createSafeBackup(context)
             backupPath ?: ""
@@ -116,12 +122,15 @@ class FloatingDotModule : Module() {
             true
         }
 
-        /**
-         * Explicit WAL/SHM cleanup — only call this after:
-         *  1. JS has called dbInstance.closeAsync() and set dbInstance = null
-         *  2. repairDatabase() has confirmed a backup with recoveredNoteCount > 0
-         *  3. The user has explicitly acknowledged the repair dialog
-         */
+        AsyncFunction("getPendingOverlayMutations") {
+            OverlayNoteRepository.getInstance(context).getPendingMutationsJson()
+        }
+
+        AsyncFunction("clearPendingOverlayMutations") {
+            OverlayNoteRepository.getInstance(context).clearPendingMutations()
+            true
+        }
+
         AsyncFunction("cleanupStaleWalFiles") {
             DatabaseRecoveryHelper.cleanupStaleWalFiles(context)
         }

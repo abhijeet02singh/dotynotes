@@ -10,8 +10,8 @@ import java.io.File
  * Single Reliable Native Note Repository for the Floating Dot Overlay.
  * 
  * Replaces direct, conflicting SQLite access in the native overlay.
- * Uses a memory cache backed by isolated JSON files to eliminate incompatible
- * WAL/SHM file locking with expo-sqlite.
+ * Uses an in-memory cache backed by isolated JSON staging files to eliminate
+ * WAL/SHM file locking and binary incompatibility with expo-sqlite.
  */
 class OverlayNoteRepository private constructor(private val context: Context) {
 
@@ -23,13 +23,29 @@ class OverlayNoteRepository private constructor(private val context: Context) {
         val tag: String,
         val isPinned: Boolean,
         val isArchived: Boolean,
+        val createdAt: Long,
         val updatedAt: Long
-    )
+    ) {
+        fun toJsonObject(): JSONObject = JSONObject().apply {
+            put("id", id)
+            put("title", title)
+            put("content", content)
+            put("colorSchemeId", colorSchemeId)
+            put("tag", tag)
+            put("isPinned", if (isPinned) 1 else 0)
+            put("isArchived", if (isArchived) 1 else 0)
+            put("createdAt", createdAt)
+            put("updatedAt", updatedAt)
+        }
+    }
 
     private val recentCacheFile = File(context.filesDir, "overlay_recent_notes.json")
     private val pendingNotesFile = File(context.filesDir, "pending_overlay_notes.json")
+    private val pendingDeletionsFile = File(context.filesDir, "pending_overlay_deletions.json")
+
     private val inMemoryRecentNotes = mutableListOf<OverlayNote>()
-    private var onNoteSavedListener: ((String) -> Unit)? = null
+    private var onMutationListener: ((type: String, data: String) -> Unit)? = null
+    private var onRecentNotesUpdatedListener: (() -> Unit)? = null
 
     init {
         loadRecentNotesFromDisk()
@@ -48,8 +64,19 @@ class OverlayNoteRepository private constructor(private val context: Context) {
         }
     }
 
+    fun setOnMutationListener(listener: ((type: String, data: String) -> Unit)?) {
+        this.onMutationListener = listener
+    }
+
+    // Keep legacy alias for FloatingDotModule compatibility
     fun setOnNoteSavedListener(listener: ((String) -> Unit)?) {
-        this.onNoteSavedListener = listener
+        this.onMutationListener = if (listener != null) {
+            { _, data -> listener(data) }
+        } else null
+    }
+
+    fun setOnRecentNotesUpdatedListener(listener: (() -> Unit)?) {
+        this.onRecentNotesUpdatedListener = listener
     }
 
     @Synchronized
@@ -70,20 +97,32 @@ class OverlayNoteRepository private constructor(private val context: Context) {
     }
 
     private fun parseNoteObject(obj: JSONObject): OverlayNote {
+        val now = System.currentTimeMillis()
+        val isPinned = if (obj.has("isPinned")) {
+            val v = obj.get("isPinned")
+            if (v is Boolean) v else obj.optInt("isPinned", 0) == 1
+        } else false
+
+        val isArchived = if (obj.has("isArchived")) {
+            val v = obj.get("isArchived")
+            if (v is Boolean) v else obj.optInt("isArchived", 0) == 1
+        } else false
+
         return OverlayNote(
-            id = obj.optString("id", ""),
-            title = obj.optString("title", ""),
+            id = obj.optString("id", "note_$now"),
+            title = obj.optString("title", "Quick Note"),
             content = obj.optString("content", ""),
             colorSchemeId = obj.optString("colorSchemeId", "purple"),
             tag = obj.optString("tag", "General"),
-            isPinned = obj.optBoolean("isPinned", false),
-            isArchived = obj.optBoolean("isArchived", false),
-            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
+            isPinned = isPinned,
+            isArchived = isArchived,
+            createdAt = obj.optLong("createdAt", now),
+            updatedAt = obj.optLong("updatedAt", now)
         )
     }
 
     /**
-     * Updates the cached recent notes provided by the main React Native application.
+     * Updates the cached recent notes provided by the authoritative React Native SQLite store.
      */
     @Synchronized
     fun syncRecentNotes(notesJson: String) {
@@ -95,28 +134,38 @@ class OverlayNoteRepository private constructor(private val context: Context) {
                 inMemoryRecentNotes.add(parseNoteObject(obj))
             }
             recentCacheFile.writeText(notesJson)
-            Log.i(TAG, "Diagnostic: Synced ${inMemoryRecentNotes.size} recent note(s) to overlay cache")
+            Log.i(TAG, "Synced ${inMemoryRecentNotes.size} note(s) from app to overlay cache")
+            onRecentNotesUpdatedListener?.invoke()
         } catch (e: Exception) {
-            Log.w(TAG, "Diagnostic Error: Failed to sync recent notes: ${e.message}")
+            Log.w(TAG, "Failed syncing recent notes: ${e.message}")
         }
     }
 
     /**
-     * Gets recent notes for display in the Quick Pad overlay.
-     * Merges in-memory recent notes with any newly captured pending notes.
+     * Gets combined notes for the Quick Pad display:
+     * Pending notes on top, then synced recent notes (excluding any pending deletions).
      */
     @Synchronized
-    fun getRecentNotes(limit: Int = 4): List<OverlayNote> {
+    fun getRecentNotes(limit: Int = 5): List<OverlayNote> {
         val pending = getPendingNotes()
+        val deletions = getPendingDeletionIds()
+
         val combined = mutableListOf<OverlayNote>()
-        
-        // Put pending notes on top so user sees their newly saved notes immediately
-        combined.addAll(pending)
-        
-        val existingIds = pending.map { it.id }.toSet()
+        val seenIds = mutableSetOf<String>()
+
+        // 1. Pending created/updated notes on top
+        for (p in pending) {
+            if (!deletions.contains(p.id)) {
+                combined.add(p)
+                seenIds.add(p.id)
+            }
+        }
+
+        // 2. Synced notes from main app
         for (note in inMemoryRecentNotes) {
-            if (!existingIds.contains(note.id)) {
+            if (!seenIds.contains(note.id) && !deletions.contains(note.id) && !note.isArchived) {
                 combined.add(note)
+                seenIds.add(note.id)
             }
         }
 
@@ -124,11 +173,10 @@ class OverlayNoteRepository private constructor(private val context: Context) {
     }
 
     /**
-     * Captures a quick note from the floating overlay.
-     * Persists to pending file and notifies active listeners.
+     * Saves a new quick note from the floating overlay.
      */
     @Synchronized
-    fun saveQuickNote(title: String, content: String): Boolean {
+    fun saveQuickNote(title: String, content: String): OverlayNote? {
         return try {
             val now = System.currentTimeMillis()
             val id = "note_${now}_${(1000..9999).random()}"
@@ -140,79 +188,204 @@ class OverlayNoteRepository private constructor(private val context: Context) {
                 tag = "Floating",
                 isPinned = false,
                 isArchived = false,
+                createdAt = now,
                 updatedAt = now
             )
 
-            // Append to pending notes
-            val pendingArray = if (pendingNotesFile.exists()) {
-                try {
-                    JSONArray(pendingNotesFile.readText())
-                } catch (e: Exception) {
-                    JSONArray()
-                }
-            } else {
-                JSONArray()
-            }
-
-            val noteObj = JSONObject().apply {
-                put("id", newNote.id)
-                put("title", newNote.title)
-                put("content", newNote.content)
-                put("colorSchemeId", newNote.colorSchemeId)
-                put("tag", newNote.tag)
-                put("isPinned", 0)
-                put("isArchived", 0)
-                put("createdAt", now)
-                put("updatedAt", now)
-            }
-
-            pendingArray.put(noteObj)
+            // Add to pending notes
+            val pendingArray = loadJsonArray(pendingNotesFile)
+            pendingArray.put(newNote.toJsonObject())
             pendingNotesFile.writeText(pendingArray.toString(2))
-            Log.i(TAG, "Diagnostic: Quick note captured in overlay staging queue (${pendingArray.length()} pending)")
 
-            // Notify listener (e.g. FloatingDotModule event to React Native)
-            onNoteSavedListener?.invoke(noteObj.toString())
+            // Update in-memory recent
+            inMemoryRecentNotes.add(0, newNote)
+            saveInMemoryRecentToDisk()
+
+            Log.i(TAG, "Quick note captured: ${newNote.id}")
+            onMutationListener?.invoke("CREATE", newNote.toJsonObject().toString())
+            onRecentNotesUpdatedListener?.invoke()
+            newNote
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save quick note: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Updates an existing note from the floating overlay.
+     */
+    @Synchronized
+    fun updateQuickNote(id: String, title: String, content: String): Boolean {
+        return try {
+            val now = System.currentTimeMillis()
+            val existing = inMemoryRecentNotes.find { it.id == id }
+                ?: getPendingNotes().find { it.id == id }
+
+            val updatedNote = OverlayNote(
+                id = id,
+                title = title.trim().ifEmpty { "Quick Note" },
+                content = content.trim(),
+                colorSchemeId = existing?.colorSchemeId ?: "purple",
+                tag = existing?.tag ?: "Floating",
+                isPinned = existing?.isPinned ?: false,
+                isArchived = existing?.isArchived ?: false,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now
+            )
+
+            // Update pending notes file
+            val pendingArray = loadJsonArray(pendingNotesFile)
+            var replaced = false
+            for (i in 0 until pendingArray.length()) {
+                val obj = pendingArray.getJSONObject(i)
+                if (obj.optString("id") == id) {
+                    pendingArray.put(i, updatedNote.toJsonObject())
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) {
+                pendingArray.put(updatedNote.toJsonObject())
+            }
+            pendingNotesFile.writeText(pendingArray.toString(2))
+
+            // Update in-memory list
+            val idx = inMemoryRecentNotes.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                inMemoryRecentNotes[idx] = updatedNote
+            } else {
+                inMemoryRecentNotes.add(0, updatedNote)
+            }
+            saveInMemoryRecentToDisk()
+
+            Log.i(TAG, "Quick note updated: $id")
+            onMutationListener?.invoke("UPDATE", updatedNote.toJsonObject().toString())
+            onRecentNotesUpdatedListener?.invoke()
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Diagnostic Error: Failed to save quick note: ${e.message}")
+            Log.e(TAG, "Failed to update quick note: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Deletes a note from the floating overlay.
+     */
+    @Synchronized
+    fun deleteQuickNote(id: String): Boolean {
+        return try {
+            // Remove from in-memory
+            inMemoryRecentNotes.removeAll { it.id == id }
+            saveInMemoryRecentToDisk()
+
+            // Remove from pending notes if present
+            val pendingArray = loadJsonArray(pendingNotesFile)
+            val newPending = JSONArray()
+            for (i in 0 until pendingArray.length()) {
+                val obj = pendingArray.getJSONObject(i)
+                if (obj.optString("id") != id) {
+                    newPending.put(obj)
+                }
+            }
+            pendingNotesFile.writeText(newPending.toString(2))
+
+            // Record into pending deletions
+            val deletionsArray = loadJsonArray(pendingDeletionsFile)
+            var alreadyPresent = false
+            for (i in 0 until deletionsArray.length()) {
+                if (deletionsArray.getString(i) == id) {
+                    alreadyPresent = true
+                    break
+                }
+            }
+            if (!alreadyPresent) {
+                deletionsArray.put(id)
+                pendingDeletionsFile.writeText(deletionsArray.toString(2))
+            }
+
+            Log.i(TAG, "Quick note queued for deletion: $id")
+            onMutationListener?.invoke("DELETE", id)
+            onRecentNotesUpdatedListener?.invoke()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete quick note: ${e.message}")
+            false
+        }
+    }
+
+    @Synchronized
+    private fun saveInMemoryRecentToDisk() {
+        try {
+            val arr = JSONArray()
+            for (n in inMemoryRecentNotes) {
+                arr.put(n.toJsonObject())
+            }
+            recentCacheFile.writeText(arr.toString(2))
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed saving recent cache: ${e.message}")
+        }
+    }
+
+    private fun loadJsonArray(file: File): JSONArray {
+        if (!file.exists() || !file.isFile) return JSONArray()
+        return try {
+            val content = file.readText().trim()
+            if (content.isEmpty()) JSONArray() else JSONArray(content)
+        } catch (e: Exception) {
+            JSONArray()
         }
     }
 
     @Synchronized
     private fun getPendingNotes(): List<OverlayNote> {
         val list = mutableListOf<OverlayNote>()
-        if (pendingNotesFile.exists() && pendingNotesFile.isFile) {
-            try {
-                val array = JSONArray(pendingNotesFile.readText())
-                for (i in 0 until array.length()) {
-                    list.add(parseNoteObject(array.getJSONObject(i)))
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Diagnostic Warning: Could not read pending notes: ${e.message}")
-            }
+        val array = loadJsonArray(pendingNotesFile)
+        for (i in 0 until array.length()) {
+            list.add(parseNoteObject(array.getJSONObject(i)))
         }
         return list
     }
 
     @Synchronized
+    fun getPendingDeletionIds(): Set<String> {
+        val set = mutableSetOf<String>()
+        val array = loadJsonArray(pendingDeletionsFile)
+        for (i in 0 until array.length()) {
+            set.add(array.getString(i))
+        }
+        return set
+    }
+
+    @Synchronized
     fun getPendingNotesJson(): String {
         return if (pendingNotesFile.exists() && pendingNotesFile.isFile) {
-            try {
-                pendingNotesFile.readText()
-            } catch (e: Exception) {
-                "[]"
-            }
-        } else {
-            "[]"
-        }
+            pendingNotesFile.readText()
+        } else "[]"
+    }
+
+    @Synchronized
+    fun getPendingMutationsJson(): String {
+        val result = JSONObject()
+        result.put("notes", loadJsonArray(pendingNotesFile))
+        result.put("deletions", loadJsonArray(pendingDeletionsFile))
+        return result.toString()
     }
 
     @Synchronized
     fun clearPendingNotes() {
         if (pendingNotesFile.exists()) {
             pendingNotesFile.delete()
-            Log.i(TAG, "Diagnostic: Cleared pending notes staging file after SQLite sync")
         }
+    }
+
+    @Synchronized
+    fun clearPendingMutations() {
+        if (pendingNotesFile.exists()) {
+            pendingNotesFile.delete()
+        }
+        if (pendingDeletionsFile.exists()) {
+            pendingDeletionsFile.delete()
+        }
+        Log.i(TAG, "Cleared all overlay pending staging queues")
     }
 }
