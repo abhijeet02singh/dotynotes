@@ -13,20 +13,23 @@ import java.util.Locale
 /**
  * Diagnostic and safe recovery helper for the DotyNotes SQLite database.
  *
- * CRITICAL SAFETY RULE: This helper must NEVER open the live database
- * (${filesDir}/SQLite/dotynotes.db) using android.database.sqlite.SQLiteDatabase.
+ * CRITICAL CONTRACT — this class has two categories of operations:
  *
- * expo-sqlite compiles its own custom SQLite binary (libexpo-sqlite.so) with
- * a different WAL header format and SHM checksum algorithm. Opening the same
- * WAL-mode file with Android system libsqlite.so rewrites the WAL header and
- * SHM index using incompatible checksums — the next expo-sqlite open will then
- * see "database disk image is malformed".
+ * NON-DESTRUCTIVE (always safe to call):
+ *  - createSafeBackup(): file-copy of .db + -wal + -shm, no SQLite connection
+ *  - extractNotesFromBackupFile(): reads a BACKUP COPY via Android SQLite (read-only)
+ *  - repairDatabase(): backup + inspect backup + return diagnostic report, NO live modifications
  *
- * Safe operations performed by this class:
- *  - File-copy backup (no SQLite open on the live file)
- *  - Deleting stale -wal and -shm files so expo-sqlite re-opens cleanly
- *  - Opening BACKUP COPIES (never the live file) via Android SQLite for
- *    note extraction
+ * DESTRUCTIVE (must only be called explicitly after user review):
+ *  - cleanupStaleWalFiles(): deletes live -wal and -shm files
+ *    Call only AFTER: (a) expo-sqlite connection is closed by JS, and
+ *    (b) a consistent backup has been verified to exist.
+ *
+ * NEVER open the live database (${filesDir}/SQLite/dotynotes.db)
+ * using android.database.sqlite.SQLiteDatabase. expo-sqlite uses its
+ * own custom libexpo-sqlite.so with an incompatible WAL header/SHM
+ * checksum format. Any READWRITE open via the Android system library
+ * will corrupt the WAL headers irreversibly.
  */
 object DatabaseRecoveryHelper {
     private const val TAG = "DotyNotesRecovery"
@@ -159,85 +162,149 @@ object DatabaseRecoveryHelper {
     }
 
     /**
-     * Safe repair routine — no Android system SQLite opens on the live file.
+     * NON-DESTRUCTIVE diagnostic routine.
      *
-     * Steps:
-     *  1. Create a file-copy backup of .db, -wal, and -shm (pure file I/O).
-     *  2. Extract notes from the backup copy for counting and emergency JSON.
-     *  3. Delete the stale -wal and -shm files from the live directory.
-     *     These are the corrupted/incompatible WAL artifacts. The main .db
-     *     contains all committed data — expo-sqlite can re-open it cleanly.
-     *  4. Return a report. expo-sqlite will re-initialize WAL mode on next open.
+     * Steps performed (no live file is modified):
+     *  1. File-copy backup of .db + -wal + -shm (pure file I/O).
+     *  2. Open the BACKUP COPY with Android system SQLite (OPEN_READONLY).
+     *     Reading a backup with a different engine is safe — no WAL headers
+     *     are rewritten on a read-only open of a file that has no active WAL.
+     *  3. Run PRAGMA integrity_check on the backup copy.
+     *  4. Count recoverable notes in the backup copy.
+     *  5. Write an emergency JSON of notes alongside the backup.
+     *  6. Return a detailed report for the JS layer to present to the user.
+     *
+     * Live WAL/SHM files are NOT deleted. Call cleanupStaleWalFiles() only
+     * after the user has reviewed the diagnostic report.
      */
     fun repairDatabase(context: Context): RecoveryReport {
-        Log.i(TAG, "Diagnostic: Initiating safe WAL cleanup repair...")
+        Log.i(TAG, "Diagnostic: Starting non-destructive database diagnosis...")
 
-        // Step 1: File-copy backup — no SQLite connection opened
+        // Step 1: File-copy backup — no SQLite connection on live file
         val backupPath = createSafeBackup(context)
-        Log.i(TAG, "Diagnostic: Backup path: $backupPath")
+        Log.i(TAG, "Diagnostic: Backup path: ${backupPath ?: "FAILED"}")
 
-        // Step 2: Extract notes from the backup copy (never the live file)
         var recoveredNoteCount = 0
+        var integrityResult = "backup_not_available"
+
         if (backupPath != null) {
             val backupDir = File(backupPath)
             val backupDbFile = File(backupDir, "dotynotes.db")
-            if (backupDbFile.exists()) {
+
+            if (backupDbFile.exists() && backupDbFile.length() > 0L) {
+                // Step 2+3: integrity check on backup copy
+                integrityResult = runIntegrityCheckOnBackup(backupDbFile)
+                Log.i(TAG, "Diagnostic: Backup integrity check result: $integrityResult")
+
+                // Step 4: count recoverable notes from backup copy
                 val notes = extractNotesFromBackupFile(backupDbFile)
                 recoveredNoteCount = notes.size
-                Log.i(TAG, "Diagnostic: $recoveredNoteCount recoverable note(s) confirmed in backup")
+                Log.i(TAG, "Diagnostic: $recoveredNoteCount recoverable note(s) in backup")
 
-                // Save emergency JSON alongside backup
+                // Step 5: emergency JSON alongside backup
                 try {
                     val emergencyJson = File(backupDir, "recovered_notes_emergency.json")
                     val jsonArray = JSONArray()
-                    for (note in notes) {
-                        jsonArray.put(JSONObject(note))
-                    }
+                    for (note in notes) { jsonArray.put(JSONObject(note)) }
                     emergencyJson.writeText(jsonArray.toString(2))
-                    Log.i(TAG, "Diagnostic: Emergency JSON saved to ${emergencyJson.absolutePath}")
+                    Log.i(TAG, "Diagnostic: Emergency JSON saved alongside backup")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Diagnostic Warning: Could not write emergency JSON: ${e.message}")
+                    Log.w(TAG, "Diagnostic Warning: Emergency JSON write failed: ${e.message}")
                 }
+            } else {
+                Log.w(TAG, "Diagnostic: Backup .db file missing or empty — live DB may be absent")
+                integrityResult = "backup_db_missing"
             }
         }
 
-        // Step 3: Delete the stale -wal and -shm files from the live directory.
-        // The main .db file contains all committed data and is preserved intact.
-        // expo-sqlite will re-create fresh, compatible WAL files on next open.
+        val liveDbExists = File(context.filesDir, "SQLite/dotynotes.db").exists()
+        val walExists = File(context.filesDir, "SQLite/dotynotes.db-wal").exists()
+        val shmExists = File(context.filesDir, "SQLite/dotynotes.db-shm").exists()
+        Log.i(TAG, "Diagnostic: Live file state — .db=$liveDbExists .wal=$walExists .shm=$shmExists")
+
+        val diagnosticMsg = buildString {
+            append("Backup: ${backupPath ?: "failed"}. ")
+            append("Backup integrity: $integrityResult. ")
+            append("Recoverable notes: $recoveredNoteCount. ")
+            append("Live .wal present: $walExists, .shm present: $shmExists. ")
+            append("No live files were modified.")
+        }
+
+        return RecoveryReport(
+            success = integrityResult.equals("ok", ignoreCase = true),
+            message = diagnosticMsg,
+            backupDirectory = backupPath,
+            recoveredNoteCount = recoveredNoteCount,
+            integrityCheckResult = integrityResult
+        )
+    }
+
+    /**
+     * Runs PRAGMA integrity_check on a BACKUP COPY file (read-only).
+     * Must never be called on the live database.
+     */
+    private fun runIntegrityCheckOnBackup(backupDbFile: File): String {
+        // Extra guard: only allow files inside a backup_ directory
+        val parentName = backupDbFile.parentFile?.name ?: ""
+        if (!parentName.startsWith("backup_")) {
+            Log.e(TAG, "SAFETY BLOCK: integrity check attempted on non-backup path")
+            return "blocked_non_backup_path"
+        }
+        return try {
+            val db = SQLiteDatabase.openDatabase(
+                backupDbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
+            )
+            val result = db.use { d ->
+                d.rawQuery("PRAGMA integrity_check;", null).use { c ->
+                    if (c.moveToFirst()) c.getString(0) ?: "no_result" else "no_result"
+                }
+            }
+            result
+        } catch (e: Exception) {
+            Log.w(TAG, "Diagnostic: integrity check on backup returned: ${e.message}")
+            "check_failed: ${e.message}"
+        }
+    }
+
+    /**
+     * DESTRUCTIVE: deletes live -wal and -shm files.
+     *
+     * MUST only be called:
+     *  - After the expo-sqlite connection has been closed from the JS side
+     *  - After repairDatabase() has confirmed a usable backup exists
+     *  - Explicitly by the user (never automatically)
+     *
+     * Returns a map with keys: walDeleted, shmDeleted, mainDbExists.
+     */
+    fun cleanupStaleWalFiles(context: Context): Map<String, Any?> {
+        Log.i(TAG, "Cleanup: Explicit WAL/SHM file deletion requested")
         val liveDir = File(context.filesDir, "SQLite")
         val walFile = File(liveDir, "dotynotes.db-wal")
         val shmFile = File(liveDir, "dotynotes.db-shm")
 
-        var deletedWal = false
-        var deletedShm = false
+        var walDeleted = false
+        var shmDeleted = false
 
         if (walFile.exists()) {
-            deletedWal = walFile.delete()
-            Log.i(TAG, "Diagnostic: Deleted stale -wal file: $deletedWal")
+            walDeleted = walFile.delete()
+            Log.i(TAG, "Cleanup: -wal deleted: $walDeleted")
+        } else {
+            Log.i(TAG, "Cleanup: No -wal file present")
         }
         if (shmFile.exists()) {
-            deletedShm = shmFile.delete()
-            Log.i(TAG, "Diagnostic: Deleted stale -shm file: $deletedShm")
+            shmDeleted = shmFile.delete()
+            Log.i(TAG, "Cleanup: -shm deleted: $shmDeleted")
+        } else {
+            Log.i(TAG, "Cleanup: No -shm file present")
         }
 
         val mainDbExists = File(liveDir, "dotynotes.db").exists()
-        val success = mainDbExists
+        Log.i(TAG, "Cleanup complete: walDeleted=$walDeleted, shmDeleted=$shmDeleted, mainDbExists=$mainDbExists")
 
-        val statusMsg = buildString {
-            append("Main DB preserved: $mainDbExists. ")
-            if (deletedWal) append("Stale WAL deleted. ")
-            if (deletedShm) append("Stale SHM deleted. ")
-            append("expo-sqlite will re-initialize WAL on next open.")
-        }
-
-        Log.i(TAG, "Diagnostic: Repair complete — $statusMsg")
-
-        return RecoveryReport(
-            success = success,
-            message = statusMsg,
-            backupDirectory = backupPath,
-            recoveredNoteCount = recoveredNoteCount,
-            integrityCheckResult = "deferred_to_expo_sqlite"
+        return mapOf(
+            "walDeleted" to walDeleted,
+            "shmDeleted" to shmDeleted,
+            "mainDbExists" to mainDbExists
         )
     }
 }

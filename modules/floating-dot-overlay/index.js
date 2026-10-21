@@ -77,8 +77,9 @@ export function isFloatingOverlayRunning() {
 }
 
 /**
- * Repairs SQLite database by creating a safe backup, extracting notes,
- * normalizing WAL/SHM conflicts, and verifying SQLite integrity.
+ * Diagnoses the SQLite database by creating a safe file-copy backup,
+ * running PRAGMA integrity_check on the backup copy, counting recoverable
+ * notes, and returning a detailed report. NO live files are modified.
  */
 export async function repairDatabaseAsync() {
   if (NativeOverlay && typeof NativeOverlay.repairDatabase === 'function') {
@@ -88,13 +89,36 @@ export async function repairDatabaseAsync() {
 }
 
 /**
- * Creates a timestamped safe backup of all SQLite files.
+ * Creates a timestamped safe backup of all SQLite files (pure file copy).
+ * Never opens a SQLite connection. Returns the backup directory path.
  */
 export async function createDatabaseBackupAsync() {
   if (NativeOverlay && typeof NativeOverlay.createDatabaseBackup === 'function') {
     return await NativeOverlay.createDatabaseBackup();
   }
   return null;
+}
+
+/**
+ * DESTRUCTIVE: Deletes live -wal and -shm files.
+ *
+ * Must only be called after ALL of:
+ *  1. expo-sqlite connection has been closed (dbInstance.closeAsync() called)
+ *  2. repairDatabaseAsync() confirmed recoveredNoteCount > 0 and backup exists
+ *  3. The user has explicitly confirmed the repair action in the UI
+ *
+ * Returns { walDeleted, shmDeleted, mainDbExists }.
+ */
+export async function cleanupStaleWalFilesAsync() {
+  if (NativeOverlay && typeof NativeOverlay.cleanupStaleWalFiles === 'function') {
+    try {
+      return await NativeOverlay.cleanupStaleWalFiles();
+    } catch (e) {
+      console.warn('cleanupStaleWalFiles error:', e);
+      return { walDeleted: false, shmDeleted: false, mainDbExists: false };
+    }
+  }
+  return { walDeleted: false, shmDeleted: false, mainDbExists: false };
 }
 
 /**

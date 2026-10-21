@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import {
   isNativeModuleAvailable,
-  repairDatabaseAsync,
+  createDatabaseBackupAsync,
   syncNotesToOverlayAsync,
   getPendingOverlayNotesAsync,
   clearPendingOverlayNotesAsync,
@@ -21,23 +21,27 @@ export async function getDatabase() {
 }
 
 /**
- * Setup database schema and performance indexes safely.
- * Does NOT run integrity_check here — that belongs in a post-startup
- * diagnostic, not in the blocking startup hot path.
+ * Closes and clears the cached database instance.
+ * Safe to call when preparing to perform native file operations or reset.
+ */
+export async function closeDatabaseAsync() {
+  if (dbInstance) {
+    try {
+      await dbInstance.closeAsync();
+    } catch (_) {}
+    dbInstance = null;
+  }
+}
+
+/**
+ * Setup database schema and performance indexes.
+ *
+ * Does NOT run PRAGMA integrity_check or PRAGMA wal_checkpoint here.
+ * A checkpoint cannot repair a malformed WAL, and integrity_check must
+ * never run in the blocking startup path. Both must only run after the
+ * database has been confirmed to open and respond correctly.
  */
 async function setupSchema(db) {
-  // Checkpoint any pending WAL frames into the main database file first.
-  // This consolidates any frames written by a previous session before we
-  // set journal_mode, preventing stale WAL frame accumulation.
-  try {
-    await db.runAsync('PRAGMA wal_checkpoint(TRUNCATE);');
-    console.log('[DotyNotes DB] WAL checkpoint completed');
-  } catch (e) {
-    // Non-fatal: WAL may be empty or not yet in use
-    console.log('[DotyNotes DB] WAL checkpoint skipped:', e.message);
-  }
-
-  // Set WAL mode and create schema tables/indexes
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS notes (
@@ -136,15 +140,16 @@ export async function syncRecentNotesToOverlay(dbTarget) {
 /**
  * Initialize the database schema safely.
  *
- * Strategy:
- *  1. Try to open + setup schema normally.
- *  2. On any failure, close the cached connection and retry once.
- *     This resolves transient WAL lock errors without triggering repair.
- *  3. Only if the retry also fails AND the native module is available,
- *     invoke repairDatabase() which safely deletes stale WAL/SHM files
- *     (using expo-sqlite, not Android system SQLite) so expo-sqlite can
- *     re-open the main .db cleanly.
- *  4. Run a post-startup integrity check asynchronously — never in the
+ * Non-destructive strategy:
+ *  1. Open the database and run schema setup.
+ *  2. If that fails, close the cached connection and retry once.
+ *     This resolves transient WAL lock errors without any file modification.
+ *  3. If the retry also fails, close the connection, create a native
+ *     file-copy backup of the database + WAL + SHM (without modifying
+ *     anything), and surface a structured DB_NEEDS_REPAIR error so the
+ *     UI can show a recovery prompt.
+ *  4. NEVER auto-delete WAL/SHM files, NEVER silently recreate the database.
+ *  5. Run a post-startup integrity check asynchronously — never in the
  *     blocking startup path.
  */
 export async function initDatabase() {
@@ -157,46 +162,49 @@ export async function initDatabase() {
   } catch (firstErr) {
     console.warn('[DotyNotes DB] First open attempt failed:', firstErr.message);
 
-    // Close and discard the possibly-corrupt cached connection before retrying
+    // Close and discard the cached connection before retrying.
+    // This resolves transient WAL lock races without any file modification.
     if (dbInstance) {
       try { await dbInstance.closeAsync(); } catch (_) {}
       dbInstance = null;
     }
 
-    // ── Attempt 2: Retry once (resolves transient WAL lock races) ─────
+    // ── Attempt 2: Single retry after connection reset ────────────────
     try {
       console.log('[DotyNotes DB] Retrying database open after connection reset...');
       db = await getDatabase();
       await setupSchema(db);
       console.log('[DotyNotes DB] Retry succeeded');
     } catch (retryErr) {
-      console.warn('[DotyNotes DB] Retry also failed:', retryErr.message);
-
-      // ── Attempt 3: Native repair (deletes stale WAL/SHM only) ────────
-      if (isNativeModuleAvailable) {
-        console.log('[DotyNotes DB] Invoking native WAL cleanup repair...');
-        try {
-          const report = await repairDatabaseAsync();
-          console.log('[DotyNotes DB] Repair report:', JSON.stringify(report));
-        } catch (repairErr) {
-          console.error('[DotyNotes DB] Native repair invocation failed:', repairErr.message);
-        }
-
-        // Close cached connection again before final open attempt
-        if (dbInstance) {
-          try { await dbInstance.closeAsync(); } catch (_) {}
-          dbInstance = null;
-        }
-
-        db = await getDatabase();
-        await setupSchema(db);
-      } else {
-        // Running in Expo Go — native repair unavailable.
-        // Expo Go stores SQLite in a sandboxed path per-app; a WAL artifact
-        // from a dev build cannot survive across installs. Surface the error.
-        console.error('[DotyNotes DB] Cannot repair in Expo Go — native module not available.');
-        throw retryErr;
+      // ── Both attempts failed — back up and surface error ─────────────
+      // Do NOT delete WAL/SHM. Do NOT recreate the database.
+      // Close the connection so the backup is taken consistently.
+      if (dbInstance) {
+        try { await dbInstance.closeAsync(); } catch (_) {}
+        dbInstance = null;
       }
+
+      let backupLocation = null;
+      if (isNativeModuleAvailable) {
+        try {
+          backupLocation = await createDatabaseBackupAsync();
+          console.log('[DotyNotes DB] Diagnostic backup created at:', backupLocation);
+        } catch (backupErr) {
+          console.warn('[DotyNotes DB] Backup creation warning:', backupErr.message);
+        }
+      } else {
+        console.warn('[DotyNotes DB] Native module not available — cannot create backup in Expo Go.');
+      }
+
+      // Attach structured context to the thrown error so the UI can
+      // display a meaningful recovery prompt to the user.
+      const recoveryError = new Error(
+        'SQLite database cannot be opened. Original files are preserved.\n' +
+        'Error: ' + retryErr.message
+      );
+      recoveryError.code = 'DB_NEEDS_REPAIR';
+      recoveryError.backupLocation = backupLocation;
+      throw recoveryError;
     }
   }
 
@@ -212,12 +220,10 @@ export async function initDatabase() {
   // Update overlay cache with latest notes
   await syncRecentNotesToOverlay(db);
 
-  // Run integrity check asynchronously — never blocks startup
-  // (uses setTimeout 0 to push to next event-loop tick)
+  // Run integrity check asynchronously after startup — never in the hot path
   setTimeout(() => runIntegrityCheckAsync(db), 0);
 
   return db;
-
 }
 
 /**

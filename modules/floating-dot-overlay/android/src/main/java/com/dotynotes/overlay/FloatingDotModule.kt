@@ -92,28 +92,38 @@ class FloatingDotModule : Module() {
             FloatingDotService.isRunning
         }
 
-        Function("repairDatabase") {
+        AsyncFunction("repairDatabase") {
             val report = DatabaseRecoveryHelper.repairDatabase(context)
             report.toMap()
         }
 
-        Function("createDatabaseBackup") {
+        AsyncFunction("createDatabaseBackup") {
             val backupPath = DatabaseRecoveryHelper.createSafeBackup(context)
             backupPath ?: ""
         }
 
-        Function("syncNotesToOverlay") { notesJson: String ->
+        AsyncFunction("syncNotesToOverlay") { notesJson: String ->
             OverlayNoteRepository.getInstance(context).syncRecentNotes(notesJson)
             true
         }
 
-        Function("getPendingOverlayNotes") {
+        AsyncFunction("getPendingOverlayNotes") {
             OverlayNoteRepository.getInstance(context).getPendingNotesJson()
         }
 
-        Function("clearPendingOverlayNotes") {
+        AsyncFunction("clearPendingOverlayNotes") {
             OverlayNoteRepository.getInstance(context).clearPendingNotes()
             true
+        }
+
+        /**
+         * Explicit WAL/SHM cleanup — only call this after:
+         *  1. JS has called dbInstance.closeAsync() and set dbInstance = null
+         *  2. repairDatabase() has confirmed a backup with recoveredNoteCount > 0
+         *  3. The user has explicitly acknowledged the repair dialog
+         */
+        AsyncFunction("cleanupStaleWalFiles") {
+            DatabaseRecoveryHelper.cleanupStaleWalFiles(context)
         }
     }
 }

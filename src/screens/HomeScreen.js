@@ -23,6 +23,7 @@ import BottomNavigation from '../components/BottomNavigation';
 import FloatingDotScreen from './FloatingDotScreen';
 import {
   initDatabase,
+  closeDatabaseAsync,
   getAllNotesAsync,
   createNoteAsync,
   updateNoteAsync,
@@ -30,7 +31,12 @@ import {
   togglePinNoteAsync,
   toggleArchiveNoteAsync,
 } from '../services/notesDb';
-import { addOverlayNoteListener } from '../../modules/floating-dot-overlay';
+import {
+  addOverlayNoteListener,
+  isNativeModuleAvailable,
+  repairDatabaseAsync,
+  cleanupStaleWalFilesAsync,
+} from '../../modules/floating-dot-overlay';
 import { THEME } from '../constants/theme';
 
 export default function HomeScreen() {
@@ -62,6 +68,53 @@ export default function HomeScreen() {
       setIsLoading(false);
     }
   }, []);
+
+  // Safe manual recovery flow — creates safe backup, verifies notes, then asks user before cleanup
+  const handleDiagnoseAndRecover = async () => {
+    try {
+      setIsLoading(true);
+      const report = await repairDatabaseAsync();
+      setIsLoading(false);
+      if (!report) {
+        Alert.alert('Diagnostic', 'No recovery report available.');
+        return;
+      }
+
+      const noteCount = report.recoveredNoteCount || 0;
+      const integrity = report.integrityCheckResult || 'unknown';
+      const backupDir = report.backupDirectory ? report.backupDirectory.split(/[/\\]/).pop() : 'backup';
+
+      Alert.alert(
+        'Database Diagnostic Report',
+        `Safe Backup: Created in ${backupDir}\n` +
+        `Backup Integrity: ${integrity}\n` +
+        `Recoverable Notes Found: ${noteCount}\n\n` +
+        `All original files have been safely backed up without modification. If your database was corrupted by a WAL mismatch, you can safely clear stale WAL files and re-open the database from the main database file.`,
+        [
+          { text: 'Keep Files As-Is', style: 'cancel' },
+          {
+            text: 'Clear Stale WAL & Reconnect',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setIsLoading(true);
+                await closeDatabaseAsync();
+                await cleanupStaleWalFilesAsync();
+                await loadNotesFromDb();
+              } catch (cleanErr) {
+                Alert.alert('Recovery Error', cleanErr.message);
+              } finally {
+                setIsLoading(false);
+              }
+            },
+          },
+        ]
+      );
+    } catch (e) {
+      setIsLoading(false);
+      Alert.alert('Diagnostic Error', e.message);
+    }
+  };
 
   useEffect(() => {
     loadNotesFromDb();
@@ -233,15 +286,29 @@ export default function HomeScreen() {
         {/* Database Error Banner if SQLite fails */}
         {dbError && (
           <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>⚠️ SQLite Error: {dbError}</Text>
-            <TouchableOpacity
-              style={styles.retryButton}
-              onPress={loadNotesFromDb}
-              accessibilityRole="button"
-              accessibilityLabel="Retry loading database"
-            >
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </TouchableOpacity>
+            <View style={styles.errorContent}>
+              <Text style={styles.errorText}>⚠️ SQLite Error: {dbError}</Text>
+              <View style={styles.errorButtonsRow}>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  onPress={loadNotesFromDb}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading database"
+                >
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+                {isNativeModuleAvailable && (
+                  <TouchableOpacity
+                    style={styles.recoverButton}
+                    onPress={handleDiagnoseAndRecover}
+                    accessibilityRole="button"
+                    accessibilityLabel="Diagnose and recover database"
+                  >
+                    <Text style={styles.recoverButtonText}>Diagnose & Recover</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
           </View>
         )}
 
@@ -507,24 +574,39 @@ const styles = StyleSheet.create({
     borderBottomColor: '#FCA5A5',
     paddingHorizontal: THEME.spacing.lg,
     paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  },
+  errorContent: {
+    flexDirection: 'column',
+    gap: 8,
   },
   errorText: {
     fontSize: 12,
     color: '#B91C1C',
     fontWeight: '600',
-    flex: 1,
+  },
+  errorButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
   },
   retryButton: {
     backgroundColor: '#DC2626',
     paddingHorizontal: 12,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderRadius: THEME.borderRadius.sm,
-    marginLeft: 10,
   },
   retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  recoverButton: {
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: THEME.borderRadius.sm,
+  },
+  recoverButtonText: {
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '700',
