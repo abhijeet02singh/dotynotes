@@ -17,6 +17,6 @@ class OverlayDatabaseHelper(context: Context) {
     }
 
     fun insertQuickNote(title: String, content: String): Boolean {
-        return repository.saveQuickNote(title, content)
+        return repository.saveQuickNote(title, content) != null
     }
 }
