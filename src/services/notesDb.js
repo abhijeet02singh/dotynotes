@@ -87,12 +87,15 @@ async function runIntegrityCheckAsync(db) {
   }
 }
 
+let isFlushingMutations = false;
+
 /**
  * Ingests all pending overlay mutations (creations, updates, deletions) into SQLite.
  * Single source of truth: all persistent mutations land in dotynotes.db.
  */
 export async function flushPendingOverlayMutations(dbTarget) {
-  if (!isNativeModuleAvailable) return;
+  if (!isNativeModuleAvailable || isFlushingMutations) return;
+  isFlushingMutations = true;
   try {
     const mutations = await getPendingOverlayMutationsAsync();
     const db = dbTarget || (await getDatabase());
@@ -169,6 +172,8 @@ export async function flushPendingOverlayMutations(dbTarget) {
     }
   } catch (e) {
     console.warn('[DotyNotes DB] Failed to flush pending overlay mutations:', e.message);
+  } finally {
+    isFlushingMutations = false;
   }
 }
 

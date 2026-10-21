@@ -30,6 +30,7 @@ class QuickNotesOverlayView(
     private val saveBtn: Button
     private val cancelEditBtn: TextView
     private var editingNoteId: String? = null
+    private var isSaving = false
 
     init {
         // Main Card Container
@@ -209,6 +210,8 @@ class QuickNotesOverlayView(
     }
 
     private fun handleSaveOrUpdate() {
+        if (isSaving) return
+
         val title = titleInput.text.toString().trim()
         val content = contentInput.text.toString().trim()
 
@@ -217,27 +220,35 @@ class QuickNotesOverlayView(
             return
         }
 
-        val currentEditId = editingNoteId
-        if (currentEditId != null) {
-            val success = repository.updateQuickNote(currentEditId, title, content)
-            if (success) {
-                Toast.makeText(context, "Note updated!", Toast.LENGTH_SHORT).show()
-                resetEditorState()
-                refreshRecentNotes()
-                onNoteSavedCallback()
+        isSaving = true
+        saveBtn.isEnabled = false
+
+        try {
+            val currentEditId = editingNoteId
+            if (currentEditId != null) {
+                val success = repository.updateQuickNote(currentEditId, title, content)
+                if (success) {
+                    Toast.makeText(context, "Note updated!", Toast.LENGTH_SHORT).show()
+                    resetEditorState()
+                    refreshRecentNotes()
+                    onNoteSavedCallback()
+                } else {
+                    Toast.makeText(context, "Failed to update note", Toast.LENGTH_SHORT).show()
+                }
             } else {
-                Toast.makeText(context, "Failed to update note", Toast.LENGTH_SHORT).show()
+                val savedNote = repository.saveQuickNote(title, content)
+                if (savedNote != null) {
+                    Toast.makeText(context, "Note saved to DotyNotes!", Toast.LENGTH_SHORT).show()
+                    resetEditorState()
+                    refreshRecentNotes()
+                    onNoteSavedCallback()
+                } else {
+                    Toast.makeText(context, "Failed to save note", Toast.LENGTH_SHORT).show()
+                }
             }
-        } else {
-            val savedNote = repository.saveQuickNote(title, content)
-            if (savedNote != null) {
-                Toast.makeText(context, "Note saved to DotyNotes!", Toast.LENGTH_SHORT).show()
-                resetEditorState()
-                refreshRecentNotes()
-                onNoteSavedCallback()
-            } else {
-                Toast.makeText(context, "Failed to save note", Toast.LENGTH_SHORT).show()
-            }
+        } finally {
+            isSaving = false
+            saveBtn.isEnabled = true
         }
     }
 
@@ -331,7 +342,34 @@ class QuickNotesOverlayView(
             }
             noteCard.addView(textLayout)
 
-            // Right side delete button
+            // Right side buttons (Pin + Delete)
+            val buttonsRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            val pinBtn = TextView(context).apply {
+                text = if (note.isPinned) "📍" else "📌"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                gravity = Gravity.CENTER
+                val btnSize = (28 * density).toInt()
+                layoutParams = LinearLayout.LayoutParams(btnSize, btnSize).apply {
+                    marginEnd = (4 * density).toInt()
+                }
+                background = GradientDrawable().apply {
+                    setColor(if (note.isPinned) Color.parseColor("#DDD6FE") else Color.parseColor("#F1F5F9"))
+                    cornerRadius = 14 * density
+                }
+                setOnClickListener {
+                    val toggled = repository.togglePinQuickNote(note.id)
+                    if (toggled) {
+                        Toast.makeText(context, if (note.isPinned) "Note unpinned" else "Note pinned", Toast.LENGTH_SHORT).show()
+                        refreshRecentNotes()
+                        onNoteSavedCallback()
+                    }
+                }
+            }
+
             val deleteBtn = TextView(context).apply {
                 text = "🗑"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -354,7 +392,10 @@ class QuickNotesOverlayView(
                     }
                 }
             }
-            noteCard.addView(deleteBtn)
+
+            buttonsRow.addView(pinBtn)
+            buttonsRow.addView(deleteBtn)
+            noteCard.addView(buttonsRow)
 
             recentNotesContainer.addView(noteCard)
         }

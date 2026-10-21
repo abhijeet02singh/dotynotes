@@ -50,6 +50,7 @@ export default function NoteEditorModal({
   }, [visible, noteToEdit]);
 
   const handleSave = async () => {
+    if (isSubmitting) return;
     if (!title.trim() && !content.trim()) {
       Alert.alert('Empty Note', 'Please provide a title or some content for the note.');
       return;
@@ -74,7 +75,7 @@ export default function NoteEditorModal({
   };
 
   const handleDelete = () => {
-    if (!noteToEdit || !onDelete) return;
+    if (isSubmitting || !noteToEdit || !onDelete) return;
 
     Alert.alert(
       'Delete Note',

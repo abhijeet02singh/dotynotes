@@ -269,6 +269,56 @@ class OverlayNoteRepository private constructor(private val context: Context) {
     }
 
     /**
+     * Toggles the pin status of a note from the floating overlay.
+     */
+    @Synchronized
+    fun togglePinQuickNote(id: String): Boolean {
+        return try {
+            val note = inMemoryRecentNotes.find { it.id == id }
+                ?: getPendingNotes().find { it.id == id }
+                ?: return false
+
+            val updatedNote = note.copy(
+                isPinned = !note.isPinned,
+                updatedAt = System.currentTimeMillis()
+            )
+
+            // Update in-memory
+            val idx = inMemoryRecentNotes.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                inMemoryRecentNotes[idx] = updatedNote
+            } else {
+                inMemoryRecentNotes.add(0, updatedNote)
+            }
+            saveInMemoryRecentToDisk()
+
+            // Update pending notes
+            val pendingArray = loadJsonArray(pendingNotesFile)
+            var replaced = false
+            for (i in 0 until pendingArray.length()) {
+                val obj = pendingArray.getJSONObject(i)
+                if (obj.optString("id") == id) {
+                    pendingArray.put(i, updatedNote.toJsonObject())
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) {
+                pendingArray.put(updatedNote.toJsonObject())
+            }
+            pendingNotesFile.writeText(pendingArray.toString(2))
+
+            Log.i(TAG, "Toggled pin for note: $id, now pinned: ${updatedNote.isPinned}")
+            onMutationListener?.invoke("PIN", updatedNote.toJsonObject().toString())
+            onRecentNotesUpdatedListener?.invoke()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed toggling pin for quick note: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * Deletes a note from the floating overlay.
      */
     @Synchronized

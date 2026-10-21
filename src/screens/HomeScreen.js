@@ -59,10 +59,10 @@ export default function HomeScreen() {
   const [selectedNote, setSelectedNote] = useState(null);
   const [currentNav, setCurrentNav] = useState('notes');
 
-  // Load notes from SQLite on mount
-  const loadNotesFromDb = useCallback(async () => {
+  // Load notes from SQLite with optional silent background refresh
+  const loadNotesFromDb = useCallback(async (showSpinner = false) => {
     try {
-      setIsLoading(true);
+      if (showSpinner) setIsLoading(true);
       setDbError(null);
       await initDatabase();
       await flushPendingOverlayMutations();
@@ -72,7 +72,7 @@ export default function HomeScreen() {
       console.error('SQLite initialization/fetch error:', err);
       setDbError(err.message || 'Failed to access local SQLite database.');
     } finally {
-      setIsLoading(false);
+      if (showSpinner) setIsLoading(false);
     }
   }, []);
 
@@ -99,7 +99,7 @@ export default function HomeScreen() {
           {
             text: 'OK',
             onPress: () => {
-              loadNotesFromDb();
+              loadNotesFromDb(true);
             },
           },
         ]
@@ -149,21 +149,21 @@ export default function HomeScreen() {
   };
 
   useEffect(() => {
-    loadNotesFromDb();
+    loadNotesFromDb(true);
 
     // Refresh when app comes to foreground (e.g. after using floating overlay)
     const appStateSub = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
-        loadNotesFromDb();
+        loadNotesFromDb(false);
       }
     });
 
     // Refresh if floating overlay emits note saved or mutation event while app is alive
     const overlaySub = addOverlayNoteListener(() => {
-      loadNotesFromDb();
+      loadNotesFromDb(false);
     });
     const mutationSub = addOverlayMutationListener(() => {
-      loadNotesFromDb();
+      loadNotesFromDb(false);
     });
 
     return () => {
