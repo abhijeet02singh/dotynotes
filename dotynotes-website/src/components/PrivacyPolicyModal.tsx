@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, ShieldCheck } from 'lucide-react';
 import { APP_CONFIG } from '../constants/config';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface PrivacyPolicyModalProps {
   isOpen: boolean;
@@ -9,19 +10,7 @@ interface PrivacyPolicyModalProps {
 }
 
 export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, onClose }) => {
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    if (isOpen) {
-      window.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
-    }
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'auto';
-    };
-  }, [isOpen, onClose]);
+  const dialogRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   return (
     <AnimatePresence>
@@ -36,10 +25,12 @@ export const PrivacyPolicyModal: React.FC<PrivacyPolicyModalProps> = ({ isOpen, 
           />
 
           <motion.div
+            ref={dialogRef}
+            tabIndex={-1}
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
-            className="relative w-full max-w-2xl max-h-[85vh] bg-white rounded-3xl shadow-2xl border border-slate-200 z-10 flex flex-col overflow-hidden"
+            className="relative w-full max-w-2xl max-h-[85vh] bg-white rounded-3xl shadow-2xl border border-slate-200 z-10 flex flex-col overflow-hidden outline-none"
             role="dialog"
             aria-modal="true"
             aria-labelledby="privacy-title"

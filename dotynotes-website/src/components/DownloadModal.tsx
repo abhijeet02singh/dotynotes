@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Download, ShieldCheck, Copy, Check, Smartphone, AlertCircle, ExternalLink } from 'lucide-react';
 import { APP_CONFIG } from '../constants/config';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface DownloadModalProps {
   isOpen: boolean;
@@ -11,27 +12,16 @@ interface DownloadModalProps {
 export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose }) => {
   const [copiedChecksum, setCopiedChecksum] = useState(false);
   const release = APP_CONFIG.release;
+  const dialogRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
+  const isReleaseReady = Boolean(release.isAvailable && release.downloadUrl);
 
   const handleCopyChecksum = () => {
+    if (!release.sha256Checksum) return;
     navigator.clipboard.writeText(release.sha256Checksum);
     setCopiedChecksum(true);
     setTimeout(() => setCopiedChecksum(false), 2000);
   };
-
-  // Close on Escape key
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    if (isOpen) {
-      window.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
-    }
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'auto';
-    };
-  }, [isOpen, onClose]);
 
   return (
     <AnimatePresence>
@@ -48,11 +38,13 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
           {/* Modal Dialog */}
           <motion.div
+            ref={dialogRef}
+            tabIndex={-1}
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             transition={{ duration: 0.2 }}
-            className="relative w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl border border-slate-100 z-10"
+            className="relative w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl border border-slate-100 z-10 outline-none"
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-headline"
@@ -96,33 +88,71 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 </div>
               </div>
 
-              {/* Primary Download Action */}
-              <div className="space-y-3 mb-6">
-                <a
-                  href={release.downloadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-[#182E3A] text-white font-medium hover:bg-[#234253] transition-all shadow-md hover:shadow-lg active:scale-[0.99] group text-sm sm:text-base"
-                >
-                  <Download className="w-5 h-5 text-[#F99773] group-hover:translate-y-0.5 transition-transform" />
-                  <span>Download APK ({release.apkFileName})</span>
-                </a>
-
-                <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    Verified Offline & Ad-Free
-                  </span>
+              {/* Primary Download Action or Safe Unavailable State */}
+              {isReleaseReady ? (
+                <div className="space-y-3 mb-6">
                   <a
-                    href={release.releaseNotesUrl}
+                    href={release.downloadUrl!}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 hover:text-[#182E3A] underline underline-offset-2"
+                    className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-[#182E3A] text-white font-medium hover:bg-[#234253] transition-all shadow-md hover:shadow-lg active:scale-[0.99] group text-sm sm:text-base"
                   >
-                    View Release Notes <ExternalLink className="w-3 h-3" />
+                    <Download className="w-5 h-5 text-[#F99773] group-hover:translate-y-0.5 transition-transform" />
+                    <span>Download APK ({release.apkFileName})</span>
                   </a>
+
+                  <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                    <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      Verified Offline &amp; Ad-Free
+                    </span>
+                    <a
+                      href={release.releaseNotesUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 hover:text-[#182E3A] underline underline-offset-2"
+                    >
+                      View Release Notes <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-4 mb-6">
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-xs text-amber-900">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold block text-sm text-amber-950 mb-1">
+                          Release in Preparation (v{release.version})
+                        </span>
+                        <p className="text-amber-800/90 leading-relaxed">
+                          The official Android APK production build is currently being prepared and verified. Direct download will become available once the APK and its verified checksum are published.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <a
+                    href={release.githubUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-[#182E3A] text-white font-medium hover:bg-[#234253] transition-all shadow-md hover:shadow-lg text-sm sm:text-base group"
+                  >
+                    <span>View Repository on GitHub</span>
+                    <ExternalLink className="w-4 h-4 text-[#F99773] group-hover:translate-x-0.5 transition-transform" />
+                  </a>
+
+                  <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                    <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      Verified Offline &amp; Ad-Free
+                    </span>
+                    <span className="text-slate-500 font-medium">
+                      Status: Upcoming Release
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Sideloading Walkthrough */}
               <div className="border-t border-slate-100 pt-5">
@@ -153,22 +183,30 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 </ol>
               </div>
 
-              {/* SHA256 Checksum */}
+              {/* SHA-256 Checksum (Available only when a real checksum is configured) */}
               <div className="mt-5 p-3 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between gap-2">
                 <div className="overflow-hidden">
                   <span className="block text-[10px] uppercase font-bold text-slate-400">SHA-256 Checksum</span>
-                  <span className="block font-mono text-[11px] text-slate-600 truncate max-w-[280px] sm:max-w-md">
-                    {release.sha256Checksum}
-                  </span>
+                  {release.sha256Checksum ? (
+                    <span className="block font-mono text-[11px] text-slate-600 truncate max-w-[280px] sm:max-w-md">
+                      {release.sha256Checksum}
+                    </span>
+                  ) : (
+                    <span className="block text-[11px] text-slate-500 italic">
+                      Available upon official build publication
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={handleCopyChecksum}
-                  className="flex-shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-[#182E3A] hover:bg-slate-200/70 transition-colors"
-                  title="Copy SHA-256 Checksum"
-                  aria-label="Copy SHA-256 Checksum"
-                >
-                  {copiedChecksum ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-                </button>
+                {release.sha256Checksum && (
+                  <button
+                    onClick={handleCopyChecksum}
+                    className="flex-shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-[#182E3A] hover:bg-slate-200/70 transition-colors"
+                    title="Copy SHA-256 Checksum"
+                    aria-label="Copy SHA-256 Checksum"
+                  >
+                    {copiedChecksum ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                )}
               </div>
             </div>
           </motion.div>

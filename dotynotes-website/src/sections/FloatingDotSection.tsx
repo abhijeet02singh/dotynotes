@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Layers, Shield, Zap, ArrowRight, Maximize2, X, ChevronLeft, ChevronRight, Smartphone } from 'lucide-react';
 import { AndroidMockup } from '../components/AndroidMockup';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface FloatingDotSectionProps {
   onTriggerQuickPad?: () => void;
@@ -25,7 +26,7 @@ const FLOATING_DOT_SCENARIOS: FloatingDotScenario[] = [
     title: 'Quick Pad Overlay',
     caption: 'Quick Pad Overlay',
     badge: '01 / Active Capture',
-    image: '/images/floating-dot/android-quick-pad.jpg',
+    image: '/images/floating-dot/android-quick-pad.webp',
     alt: 'Authentic DotyNotes Android screenshot showing Quick Pad overlay open on Android home screen',
     description: 'The native Quick Pad drawer opened seamlessly on top of your screen to record thoughts instantly.',
   },
@@ -35,7 +36,7 @@ const FLOATING_DOT_SCENARIOS: FloatingDotScenario[] = [
     title: 'Multitasking with Chrome',
     caption: 'Multitasking with Chrome',
     badge: '02 / Web Research',
-    image: '/images/floating-dot/chrome-floating-dot.jpg',
+    image: '/images/floating-dot/chrome-floating-dot.webp',
     alt: 'Original DotyNotes Floating Dot while browsing in Chrome',
     description: 'The discreet Floating Dot docked unobtrusively on the screen edge while reading articles in Chrome.',
   },
@@ -45,7 +46,7 @@ const FLOATING_DOT_SCENARIOS: FloatingDotScenario[] = [
     title: 'Immersion with E-Reader',
     caption: 'Immersion with E-Reader',
     badge: '03 / Deep Reading',
-    image: '/images/floating-dot/ereader-floating-dot.jpg',
+    image: '/images/floating-dot/ereader-floating-dot.webp',
     alt: 'DotyNotes Floating Dot while reading an e-book in an E-Reader',
     description: 'Capture quotes and book takeaways without breaking focus or leaving your reading application.',
   },
@@ -55,7 +56,7 @@ const FLOATING_DOT_SCENARIOS: FloatingDotScenario[] = [
     title: 'Instant Access in Team Chat',
     caption: 'Instant Access in Team Chat',
     badge: '04 / Messaging & Work',
-    image: '/images/floating-dot/team-chat-floating-dot.jpeg',
+    image: '/images/floating-dot/team-chat-floating-dot.webp',
     alt: 'DotyNotes Floating Dot during a team chat conversation',
     description: 'Jot down meeting action items and reminders without switching away from team messaging conversations.',
   },
@@ -71,6 +72,11 @@ export const FloatingDotSection: React.FC<FloatingDotSectionProps> = ({ onTrigge
   const activeScenario = FLOATING_DOT_SCENARIOS.find((s) => s.id === activeScenarioId) || FLOATING_DOT_SCENARIOS[0];
   const activeIndex = FLOATING_DOT_SCENARIOS.findIndex((s) => s.id === activeScenarioId);
 
+  const lightboxRef = useFocusTrap<HTMLDivElement>({
+    isOpen: fullscreenIdx !== null,
+    onClose: () => setFullscreenIdx(null),
+  });
+
   const handlePrevFullscreen = useCallback(() => {
     setFullscreenIdx((prev) => (prev === null ? null : (prev - 1 + FLOATING_DOT_SCENARIOS.length) % FLOATING_DOT_SCENARIOS.length));
   }, []);
@@ -79,12 +85,11 @@ export const FloatingDotSection: React.FC<FloatingDotSectionProps> = ({ onTrigge
     setFullscreenIdx((prev) => (prev === null ? null : (prev + 1) % FLOATING_DOT_SCENARIOS.length));
   }, []);
 
-  // Keyboard navigation for fullscreen lightbox modal
+  // Keyboard navigation for fullscreen lightbox modal (arrow keys)
   useEffect(() => {
     if (fullscreenIdx === null) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setFullscreenIdx(null);
       if (e.key === 'ArrowLeft') handlePrevFullscreen();
       if (e.key === 'ArrowRight') handleNextFullscreen();
     };
@@ -324,12 +329,17 @@ export const FloatingDotSection: React.FC<FloatingDotSectionProps> = ({ onTrigge
             onClick={() => setFullscreenIdx(null)}
           >
             <motion.div
+              ref={lightboxRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-label={FLOATING_DOT_SCENARIOS[fullscreenIdx].title}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               transition={{ duration: 0.2 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative max-w-lg w-full max-h-[92vh] flex flex-col items-center"
+              className="relative max-w-lg w-full max-h-[92vh] flex flex-col items-center outline-none"
             >
               {/* Modal Top Bar */}
               <div className="w-full flex items-center justify-between text-white mb-3 px-2">

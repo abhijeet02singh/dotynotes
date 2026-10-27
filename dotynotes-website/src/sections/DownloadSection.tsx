@@ -12,10 +12,13 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({ onOpenDownload
   const release = APP_CONFIG.release;
 
   const handleCopyChecksum = () => {
+    if (!release.sha256Checksum) return;
     navigator.clipboard.writeText(release.sha256Checksum);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const isReleaseReady = Boolean(release.isAvailable && release.downloadUrl);
 
   return (
     <section id="download" className="py-20 sm:py-32 bg-[#FAF9F6] border-b border-slate-200/80 relative">
@@ -72,21 +75,31 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({ onOpenDownload
 
             {/* CTAs */}
             <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-4">
-              <a
-                href={release.downloadUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
-              >
-                <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
-                <span>Download DotyNotes for Android</span>
-              </a>
+              {isReleaseReady ? (
+                <a
+                  href={release.downloadUrl!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
+                >
+                  <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
+                  <span>Download DotyNotes for Android</span>
+                </a>
+              ) : (
+                <button
+                  onClick={onOpenDownloadModal}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
+                >
+                  <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
+                  <span>Download APK (Upcoming Release)</span>
+                </button>
+              )}
 
               <button
                 onClick={onOpenDownloadModal}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-4 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-semibold text-base transition-colors border border-white/20 backdrop-blur-sm"
               >
-                <span>Installation Guide & Checksum</span>
+                <span>Installation Guide &amp; Checksum</span>
               </button>
             </div>
 
@@ -94,18 +107,26 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({ onOpenDownload
             <div className="pt-6 border-t border-white/15 max-w-xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs bg-slate-950/40 backdrop-blur-md p-3.5 rounded-xl border border-white/10">
               <div className="text-left overflow-hidden w-full sm:w-auto">
                 <span className="text-[10px] text-sky-200/80 uppercase font-bold block">SHA-256 Checksum</span>
-                <span className="font-mono text-[11px] text-slate-200 truncate block max-w-xs sm:max-w-md">
-                  {release.sha256Checksum}
-                </span>
+                {release.sha256Checksum ? (
+                  <span className="font-mono text-[11px] text-slate-200 truncate block max-w-xs sm:max-w-md">
+                    {release.sha256Checksum}
+                  </span>
+                ) : (
+                  <span className="text-xs text-sky-200/80 italic block">
+                    Available upon official build publication
+                  </span>
+                )}
               </div>
-              <button
-                onClick={handleCopyChecksum}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition-colors flex-shrink-0 border border-white/10"
-                title="Copy SHA-256 Checksum"
-              >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Copied' : 'Copy'}</span>
-              </button>
+              {release.sha256Checksum && (
+                <button
+                  onClick={handleCopyChecksum}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition-colors flex-shrink-0 border border-white/10"
+                  title="Copy SHA-256 Checksum"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+              )}
             </div>
 
             {/* Release Links */}

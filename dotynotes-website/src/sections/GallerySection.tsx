@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, Maximize2, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ScreenshotItem {
   id: string;
@@ -18,7 +19,7 @@ const SCREENSHOTS: ScreenshotItem[] = [
     badge: '01 / Grid & Search',
     description: 'Dynamic pastel sticky notes with masonry layout, search, and category filters.',
     alt: 'Authentic DotyNotes Android screenshot showing Home Notes grid with colorful sticky notes and search bar',
-    src: '/images/screenshots/dotynotes-home-notes.jpg',
+    src: '/images/screenshots/dotynotes-home-notes.webp',
   },
   {
     id: 'rich-text-editor',
@@ -26,7 +27,7 @@ const SCREENSHOTS: ScreenshotItem[] = [
     badge: '02 / Note Crafting',
     description: 'Focused writing modal with bold, italic, underline, checklist, and pastel color choices.',
     alt: 'Authentic DotyNotes Android screenshot displaying the rich-text note editor and formatting toolbar',
-    src: '/images/screenshots/dotynotes-rich-text-editor.jpg',
+    src: '/images/screenshots/dotynotes-rich-text-editor.webp',
   },
   {
     id: 'floating-dot-quick-pad',
@@ -34,7 +35,7 @@ const SCREENSHOTS: ScreenshotItem[] = [
     badge: '03 / Native Overlay',
     description: 'System overlay handle accessible over any running app for instant note taking.',
     alt: 'Authentic DotyNotes Android screenshot showing the native Floating Dot and Quick Pad overlay',
-    src: '/images/screenshots/dotynotes-floating-dot-quick-pad.jpg',
+    src: '/images/screenshots/dotynotes-floating-dot-quick-pad.webp',
   },
   {
     id: 'settings-themes',
@@ -42,12 +43,17 @@ const SCREENSHOTS: ScreenshotItem[] = [
     badge: '04 / Customization',
     description: 'Theme customization, floating overlay controls, and offline JSON backup options.',
     alt: 'Authentic DotyNotes Android screenshot displaying application settings, themes, and preferences',
-    src: '/images/screenshots/dotynotes-settings-themes.jpg',
+    src: '/images/screenshots/dotynotes-settings-themes.webp',
   },
 ];
 
 export const GallerySection: React.FC = () => {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+
+  const lightboxRef = useFocusTrap<HTMLDivElement>({
+    isOpen: selectedIdx !== null,
+    onClose: () => setSelectedIdx(null),
+  });
 
   const handlePrev = useCallback(() => {
     setSelectedIdx((prev) => (prev === null ? null : (prev - 1 + SCREENSHOTS.length) % SCREENSHOTS.length));
@@ -57,12 +63,11 @@ export const GallerySection: React.FC = () => {
     setSelectedIdx((prev) => (prev === null ? null : (prev + 1) % SCREENSHOTS.length));
   }, []);
 
-  // Keyboard navigation for full-screen inspection
+  // Arrow key navigation for full-screen inspection
   useEffect(() => {
     if (selectedIdx === null) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedIdx(null);
       if (e.key === 'ArrowLeft') handlePrev();
       if (e.key === 'ArrowRight') handleNext();
     };
@@ -183,12 +188,17 @@ export const GallerySection: React.FC = () => {
           >
             {/* Modal Dialog Content */}
             <motion.div
+              ref={lightboxRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-label={SCREENSHOTS[selectedIdx].caption}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               transition={{ duration: 0.2 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative max-w-lg w-full max-h-[92vh] flex flex-col items-center"
+              className="relative max-w-lg w-full max-h-[92vh] flex flex-col items-center outline-none"
             >
               {/* Top Controls */}
               <div className="w-full flex items-center justify-between text-white mb-3 px-2">

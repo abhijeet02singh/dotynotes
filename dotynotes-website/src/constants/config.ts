@@ -7,6 +7,7 @@
  */
 
 export interface ReleaseMetadata {
+  isAvailable: boolean;
   version: string;
   versionCode: number;
   releaseDate: string;
@@ -16,8 +17,8 @@ export interface ReleaseMetadata {
   minAndroidVersion: string;
   targetAndroidVersion: string;
   packageId: string;
-  sha256Checksum: string;
-  downloadUrl: string; // Direct APK download URL or release page
+  sha256Checksum: string | null;
+  downloadUrl: string | null; // Direct APK download URL or null if not yet published
   releaseNotesUrl: string;
   githubUrl: string;
 }
@@ -33,23 +34,19 @@ export const APP_CONFIG = {
   
   // Release Metadata (Strictly verifiable from app.json & actual build specifications)
   release: {
+    isAvailable: false,
     version: '1.0.0',
     versionCode: 1,
-    releaseDate: 'October 2026',
+    releaseDate: 'Upcoming Release',
     apkFileName: 'DotyNotes-v1.0.0.apk',
     fileSizeBytes: 38168576,
     fileSizeFormatted: '~36.4 MB',
     minAndroidVersion: 'Android 8.0 (API 26) or higher',
     targetAndroidVersion: 'Android 14 / 15 (API 34/35)',
     packageId: 'com.dotynotes.app',
-    sha256Checksum: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-    
-    // IMPORTANT FOR RELEASES:
-    // When a public GitHub release or direct APK asset link is deployed,
-    // paste the direct HTTPS download URL below. If left empty or placeholder,
-    // the UI gracefully indicates direct sideloading release instructions.
-    downloadUrl: 'https://github.com/abhijeet_singhk02/dotynotes/releases/download/v1.0.0/DotyNotes-v1.0.0.apk',
-    releaseNotesUrl: 'https://github.com/abhijeet_singhk02/dotynotes/releases/tag/v1.0.0',
+    sha256Checksum: null,
+    downloadUrl: null,
+    releaseNotesUrl: 'https://github.com/abhijeet_singhk02/dotynotes',
     githubUrl: 'https://github.com/abhijeet_singhk02/dotynotes',
   } as ReleaseMetadata,
 

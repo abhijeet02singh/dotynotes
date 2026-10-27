@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useInView } from 'framer-motion';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 
 const vertexShaderSource = `
   attribute vec4 a_position;
@@ -166,15 +167,18 @@ export const SatinFlow: React.FC<SatinFlowProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isInView = useInView(containerRef);
-  const visibilityRef = useRef(true);
+  const prefersReducedMotion = useReducedMotion();
+  const [glInitialized, setGlInitialized] = useState(false);
 
   // Mouse coords and active strength refs
   const mouseRef = useRef({ x: 0, y: 0, targetX: 0, targetY: 0 });
   const mouseStrengthRef = useRef({ value: 0, targetValue: 0 });
 
-  useEffect(() => {
-    visibilityRef.current = isInView;
-  }, [isInView]);
+  // Refs for animation loop control
+  const animFrameIdRef = useRef<number | null>(null);
+  const isLoopRunningRef = useRef(false);
+  const renderFrameRef = useRef<((time: number) => void) | null>(null);
+  const startTimeRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -302,15 +306,9 @@ export const SatinFlow: React.FC<SatinFlowProps> = ({
     parent.addEventListener('touchmove', handleTouchMove as EventListener, { passive: true });
     parent.addEventListener('touchend', handleTouchEnd);
 
-    const startTime = Date.now();
-    let animationFrameId: number;
+    startTimeRef.current = Date.now();
 
-    const render = () => {
-      if (!visibilityRef.current) {
-        animationFrameId = requestAnimationFrame(render);
-        return;
-      }
-
+    renderFrameRef.current = (currentTime: number) => {
       // Handle resize and match resolution
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
@@ -321,8 +319,6 @@ export const SatinFlow: React.FC<SatinFlowProps> = ({
 
       gl.useProgram(program);
       gl.viewport(0, 0, canvas.width, canvas.height);
-
-      const currentTime = (Date.now() - startTime) / 1000;
 
       // Lerp mouse coordinates and strength for smooth momentum
       const mouse = mouseRef.current;
@@ -348,13 +344,14 @@ export const SatinFlow: React.FC<SatinFlowProps> = ({
       gl.uniform1f(uInteractiveLocation, interactive ? 1.0 : 0.0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      animationFrameId = requestAnimationFrame(render);
     };
 
-    render();
+    setGlInitialized(true);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      setGlInitialized(false);
+      renderFrameRef.current = null;
+
       gl.deleteProgram(program);
       gl.deleteShader(vertexShader);
       gl.deleteShader(fragmentShader);
@@ -368,6 +365,48 @@ export const SatinFlow: React.FC<SatinFlowProps> = ({
       parent.removeEventListener('touchend', handleTouchEnd);
     };
   }, [colors, speed, scale, noiseIntensity, interactive]);
+
+  // Manage animation frame lifecycle based on viewport visibility and reduced motion preference
+  useEffect(() => {
+    // Always cancel any pending animation frame when dependencies change
+    if (animFrameIdRef.current !== null) {
+      cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = null;
+    }
+    isLoopRunningRef.current = false;
+
+    if (!glInitialized || !renderFrameRef.current) return;
+
+    // Prefers reduced motion: render one static frame and do not schedule continuous loop
+    if (prefersReducedMotion) {
+      renderFrameRef.current(0);
+      return;
+    }
+
+    // Only run continuous animation loop when canvas container is actively in view
+    if (isInView) {
+      isLoopRunningRef.current = true;
+      const loop = () => {
+        if (!isLoopRunningRef.current || !renderFrameRef.current) {
+          animFrameIdRef.current = null;
+          isLoopRunningRef.current = false;
+          return;
+        }
+        const currentTime = (Date.now() - startTimeRef.current) / 1000;
+        renderFrameRef.current(currentTime);
+        animFrameIdRef.current = requestAnimationFrame(loop);
+      };
+      animFrameIdRef.current = requestAnimationFrame(loop);
+    }
+
+    return () => {
+      if (animFrameIdRef.current !== null) {
+        cancelAnimationFrame(animFrameIdRef.current);
+        animFrameIdRef.current = null;
+      }
+      isLoopRunningRef.current = false;
+    };
+  }, [glInitialized, isInView, prefersReducedMotion]);
 
   const finalBlurClass = blurClassMap[backdropBlurAmount] || blurClassMap['none'];
 
