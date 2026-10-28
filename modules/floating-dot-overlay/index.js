@@ -44,6 +44,38 @@ export async function requestOverlayPermission() {
 }
 
 /**
+ * Checks if exact alarm scheduling is permitted by Android (SCHEDULE_EXACT_ALARM).
+ * Returns boolean if determined, or null if native API is unavailable.
+ */
+export async function checkExactAlarmPermissionAsync() {
+  if (NativeOverlay && typeof NativeOverlay.canScheduleExactAlarms === 'function') {
+    try {
+      return Boolean(await NativeOverlay.canScheduleExactAlarms());
+    } catch (e) {
+      console.warn('Error checking exact alarm permission:', e);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks if the app is exempt from battery optimizations.
+ * Returns boolean if determined, or null if native API is unavailable.
+ */
+export async function isBatteryOptimizationIgnoredAsync() {
+  if (NativeOverlay && typeof NativeOverlay.isBatteryOptimizationIgnored === 'function') {
+    try {
+      return Boolean(await NativeOverlay.isBatteryOptimizationIgnored());
+    } catch (e) {
+      console.warn('Error checking battery optimization exemption:', e);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Starts the native floating dot foreground service.
  */
 export async function startFloatingOverlay() {
@@ -72,6 +104,25 @@ export async function stopFloatingOverlay() {
 export function isFloatingOverlayRunning() {
   if (NativeOverlay && typeof NativeOverlay.isOverlayRunning === 'function') {
     return Boolean(NativeOverlay.isOverlayRunning());
+  }
+  return false;
+}
+
+/**
+ * Sets the theme on the native floating dot overlay.
+ * Accepts a theme name string or a structured theme payload object.
+ */
+export async function setOverlayThemeAsync(themePayload) {
+  if (NativeOverlay && typeof NativeOverlay.setOverlayTheme === 'function') {
+    try {
+      const payloadString = typeof themePayload === 'string'
+        ? themePayload
+        : JSON.stringify(themePayload);
+      return await NativeOverlay.setOverlayTheme(payloadString);
+    } catch (e) {
+      console.warn('Error setting overlay theme:', e);
+      return false;
+    }
   }
   return false;
 }
@@ -229,3 +280,6 @@ export function addOverlayMutationListener(callback) {
   }
   return { remove: () => {} };
 }
+
+export { default as DotyRichTextEditor } from './DotyRichTextEditor';
+

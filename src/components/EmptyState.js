@@ -1,47 +1,65 @@
 import React from 'react';
 import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
-import { THEME } from '../constants/theme';
+import { useTheme } from '../context/ThemeContext';
+import AppIcon from './AppIcon';
 
 export default function EmptyState({
   isSearchActive = false,
   activeTab = 'all',
+  currentNav = 'notes',
   onActionPress,
 }) {
+  const { theme, isDark } = useTheme();
+
   let title = 'No notes yet';
-  let description = 'Capture quick thoughts, reminders, and ideas with the floating dot.';
-  let actionLabel = '+ Create Note';
-  let icon = '📝';
+  let description = 'Capture thoughts, reminders, and lists anytime.';
+  let actionLabel = 'Create Note';
+  let iconName = 'notes';
 
   if (isSearchActive) {
-    title = 'No matching notes';
+    title = 'No results found';
     description = 'Try searching with different keywords or check spelling.';
     actionLabel = 'Clear Search';
-    icon = '🔍';
+    iconName = 'search';
+  } else if (currentNav === 'reminders') {
+    title = 'No active reminders';
+    description = 'Notes with scheduled notifications will appear here.';
+    actionLabel = 'Create Reminder';
+    iconName = 'clock';
   } else if (activeTab === 'pinned') {
     title = 'No pinned notes';
-    description = 'Pin your most important thoughts to keep them at the top.';
+    description = 'Pin notes to keep your most important thoughts at the top.';
     actionLabel = 'View All Notes';
-    icon = '📌';
+    iconName = 'pin';
   } else if (activeTab === 'archived') {
     title = 'Archive is empty';
-    description = 'Notes you archive to clean up your workspace will show up here.';
+    description = 'Archived notes will be stored safely here.';
     actionLabel = 'Back to All';
-    icon = '🗂️';
+    iconName = 'archive';
   }
 
   return (
     <View style={styles.container}>
-      {/* Decorative illustration circle */}
-      <View style={styles.iconCircle}>
-        <Text style={styles.iconEmoji}>{icon}</Text>
+      <View
+        style={[
+          styles.iconCircle,
+          {
+            backgroundColor: isDark
+              ? 'rgba(139, 92, 246, 0.12)'
+              : theme.colors.primarySoft || '#F1EAFE',
+            borderColor: theme.colors.border,
+          },
+        ]}
+      >
+        <AppIcon name={iconName} size={26} color={theme.colors.primary} />
       </View>
 
-      <Text style={styles.title}>{title}</Text>
-      <Text style={styles.description}>{description}</Text>
+      <Text style={[styles.title, { color: theme.colors.primaryText }]}>{title}</Text>
+      <Text style={[styles.description, { color: theme.colors.textSecondary }]}>{description}</Text>
 
       {onActionPress && (
         <TouchableOpacity
-          style={styles.actionButton}
+          style={[styles.actionButton, { backgroundColor: theme.colors.primary }]}
           onPress={onActionPress}
           activeOpacity={0.8}
           accessibilityRole="button"
@@ -58,51 +76,51 @@ const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: THEME.spacing.xxxl,
-    paddingHorizontal: THEME.spacing.xl,
-    marginTop: THEME.spacing.lg,
+    paddingVertical: 44,
+    paddingHorizontal: 24,
+    marginTop: 12,
   },
   iconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: THEME.colors.primarySoft,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: THEME.spacing.lg,
-  },
-  iconEmoji: {
-    fontSize: 32,
+    marginBottom: 14,
   },
   title: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: THEME.colors.textPrimary,
-    marginBottom: THEME.spacing.xs,
+    fontSize: 17,
+    fontWeight: '600',
+    marginBottom: 4,
     textAlign: 'center',
+    letterSpacing: -0.2,
   },
   description: {
-    fontSize: 13,
-    color: THEME.colors.textSecondary,
+    fontSize: 13.5,
     textAlign: 'center',
-    lineHeight: 18,
-    maxWidth: 280,
-    marginBottom: THEME.spacing.xl,
+    lineHeight: 19,
+    maxWidth: 260,
+    marginBottom: 20,
   },
   actionButton: {
-    backgroundColor: THEME.colors.primary,
-    paddingHorizontal: THEME.spacing.xl,
-    paddingVertical: THEME.spacing.md,
-    borderRadius: THEME.borderRadius.full,
-    minHeight: 44,
-    minWidth: 140,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 11,
+    minHeight: 42,
+    minWidth: 130,
     alignItems: 'center',
     justifyContent: 'center',
-    ...THEME.shadows.subtle,
+    elevation: 2,
+    shadowColor: '#6D28D9',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
   actionButtonText: {
-    color: THEME.colors.textInverse,
-    fontSize: 14,
-    fontWeight: '700',
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '600',
+    letterSpacing: -0.1,
   },
 });

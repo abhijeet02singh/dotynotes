@@ -18,8 +18,6 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({ onOpenDownload
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isReleaseReady = Boolean(release.isAvailable && release.downloadUrl);
-
   return (
     <section id="download" className="py-20 sm:py-32 bg-[#FAF9F6] border-b border-slate-200/80 relative">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -75,25 +73,13 @@ export const DownloadSection: React.FC<DownloadSectionProps> = ({ onOpenDownload
 
             {/* CTAs */}
             <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-4">
-              {isReleaseReady ? (
-                <a
-                  href={release.downloadUrl!}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
-                >
-                  <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
-                  <span>Download DotyNotes for Android</span>
-                </a>
-              ) : (
-                <button
-                  onClick={onOpenDownloadModal}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
-                >
-                  <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
-                  <span>Download APK (Upcoming Release)</span>
-                </button>
-              )}
+              <button
+                onClick={onOpenDownloadModal}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-3 px-8 py-4 rounded-2xl bg-[#F99773] text-[#182E3A] font-bold text-base hover:bg-[#faa98d] transition-all shadow-lg hover:shadow-xl active:scale-[0.98] group"
+              >
+                <Download className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
+                <span>Download DotyNotes for Android</span>
+              </button>
 
               <button
                 onClick={onOpenDownloadModal}

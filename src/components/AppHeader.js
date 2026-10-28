@@ -1,66 +1,107 @@
-import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
-import { THEME } from '../constants/theme';
+import { StyleSheet, Text, View, TouchableOpacity, Image } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
+import AppIcon from './AppIcon';
 
 /**
- * Custom Logo crafted using pure React Native View and Text elements.
- * Features a stylized note surface with the signature floating Doty dot!
+ * Signature Brand Logo using the exact DotyNotes brand mark.
  */
 export function BrandLogo() {
   return (
     <View style={styles.logoContainer} accessibilityLabel="DotyNotes Brand Icon">
-      {/* Outer base container with purple styling */}
-      <View style={styles.logoBase}>
-        {/* Note paper body */}
-        <View style={styles.logoNoteBody}>
-          <View style={styles.logoNoteLineLong} />
-          <View style={styles.logoNoteLineShort} />
-        </View>
-        {/* Signature glowing floating dot (Doty) */}
-        <View style={styles.floatingDotGlow}>
-          <View style={styles.floatingDotCore} />
-        </View>
+      <Image
+        source={require('../../assets/dotynotes-mark.png')}
+        style={styles.brandMarkImage}
+        resizeMode="contain"
+      />
+    </View>
+  );
+}
+
+/**
+ * Reminders Tab Icon Badge
+ */
+export function RemindersLogo() {
+  const { theme } = useTheme();
+
+  return (
+    <View style={styles.logoContainer} accessibilityLabel="Reminders Icon">
+      <View style={[styles.logoBase, { backgroundColor: theme.colors.primary }]}>
+        <AppIcon name="clock" size={20} color="#FFFFFF" />
       </View>
     </View>
   );
 }
 
-export default function AppHeader({ totalCount = 0, pinnedCount = 0, onStoragePress }) {
+export default function AppHeader({
+  currentNav = 'notes',
+  totalCount = 0,
+  pinnedCount = 0,
+  reminderCount = 0,
+  onStoragePress,
+}) {
+  const { theme, isDark } = useTheme();
+  const isReminders = currentNav === 'reminders';
+
   return (
-    <View style={styles.headerContainer}>
+    <View
+      style={[
+        styles.headerContainer,
+        {
+          backgroundColor: theme.colors.surface,
+          borderBottomColor: theme.colors.border,
+        },
+      ]}
+    >
       <View style={styles.topRow}>
         <View style={styles.brandingGroup}>
-          <BrandLogo />
+          {isReminders ? <RemindersLogo /> : <BrandLogo />}
           <View style={styles.titleTextContainer}>
-            <View style={styles.appNameRow}>
-              <Text style={styles.appName}>Doty</Text>
-              <Text style={styles.appNameAccent}>Notes</Text>
-            </View>
-            <Text style={styles.appTagline}>Offline-first floating thoughts</Text>
+            {isReminders ? (
+              <View style={styles.appNameRow}>
+                <Text style={[styles.appNameTitle, { color: theme.colors.primaryText }]}>Reminders</Text>
+              </View>
+            ) : (
+              <View style={styles.appNameRow}>
+                <Text style={[styles.appNameDoty, { color: '#F99773' }]}>Doty</Text>
+                <Text style={[styles.appNameNotes, { color: isDark ? '#FFFFFF' : '#182E3A' }]}>Notes</Text>
+              </View>
+            )}
+            <Text style={[styles.appSubtitle, { color: theme.colors.textSecondary }]}>
+              {isReminders ? 'Scheduled note alerts' : 'Offline-first notes'}
+            </Text>
           </View>
         </View>
 
-        {/* Quick status pill / storage button */}
+        {/* Minimal iOS-style status badge */}
         <TouchableOpacity
-          style={styles.statusPill}
+          style={[
+            styles.statusBadge,
+            {
+              backgroundColor: theme.colors.surfaceSecondary,
+              borderColor: theme.colors.border,
+            },
+          ]}
           onPress={onStoragePress}
           activeOpacity={onStoragePress ? 0.7 : 1}
           accessibilityRole="button"
-          accessibilityLabel={`Storage & Backup: ${totalCount} total notes, ${pinnedCount} pinned`}
+          accessibilityLabel={
+            isReminders
+              ? `${reminderCount} active reminders`
+              : `Storage settings: ${totalCount} notes, ${pinnedCount} pinned`
+          }
         >
-          <View style={styles.activeIndicatorDot} />
-          <Text style={styles.statusPillText}>
-            {totalCount} {totalCount === 1 ? 'note' : 'notes'} 💾
+          <View
+            style={[
+              styles.activeDot,
+              { backgroundColor: isReminders ? theme.colors.primary : theme.colors.success },
+            ]}
+          />
+          <Text style={[styles.statusBadgeText, { color: theme.colors.primaryText }]}>
+            {isReminders
+              ? `${reminderCount} ${reminderCount === 1 ? 'alert' : 'alerts'}`
+              : `${totalCount} ${totalCount === 1 ? 'note' : 'notes'}`}
           </Text>
         </TouchableOpacity>
-      </View>
-
-      {/* Summary greeting & stats */}
-      <View style={styles.summaryBar}>
-        <Text style={styles.greetingText}>Welcome back 👋</Text>
-        <Text style={styles.statsSummary}>
-          {pinnedCount > 0 ? `📌 ${pinnedCount} pinned for quick access` : 'All notes ready'}
-        </Text>
       </View>
     </View>
   );
@@ -68,12 +109,10 @@ export default function AppHeader({ totalCount = 0, pinnedCount = 0, onStoragePr
 
 const styles = StyleSheet.create({
   headerContainer: {
-    paddingHorizontal: THEME.spacing.lg,
-    paddingTop: THEME.spacing.md,
-    paddingBottom: THEME.spacing.md,
-    backgroundColor: THEME.colors.surface,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: THEME.colors.borderLight,
   },
   topRow: {
     flexDirection: 'row',
@@ -85,55 +124,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoContainer: {
-    marginRight: THEME.spacing.md,
+    marginRight: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  brandMarkImage: {
+    width: 25,
+    height: 33,
   },
   logoBase: {
-    width: 44,
-    height: 44,
-    borderRadius: THEME.borderRadius.md,
-    backgroundColor: THEME.colors.primary,
+    width: 34,
+    height: 34,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    ...THEME.shadows.subtle,
   },
   logoNoteBody: {
-    width: 22,
-    height: 26,
-    borderRadius: 4,
+    width: 17,
+    height: 20,
+    borderRadius: 2.5,
     backgroundColor: '#FFFFFF',
-    padding: 3,
+    padding: 2.2,
     justifyContent: 'center',
-    gap: 3,
+    gap: 2.2,
   },
   logoNoteLineLong: {
-    height: 2.5,
+    height: 2,
     width: '100%',
-    backgroundColor: THEME.colors.primaryLight,
-    borderRadius: 2,
+    borderRadius: 1,
   },
   logoNoteLineShort: {
-    height: 2.5,
-    width: '65%',
-    backgroundColor: THEME.colors.accent,
-    borderRadius: 2,
+    height: 2,
+    width: '58%',
+    backgroundColor: '#C4B5FD',
+    borderRadius: 1,
   },
   floatingDotGlow: {
     position: 'absolute',
-    top: -3,
-    right: -3,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: THEME.colors.primarySoft,
+    top: -2,
+    right: -2,
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+    backgroundColor: '#F1EAFE',
     alignItems: 'center',
     justifyContent: 'center',
   },
   floatingDotCore: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: THEME.colors.accentDot,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   titleTextContainer: {
     justifyContent: 'center',
@@ -142,58 +183,44 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  appName: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: THEME.colors.primary,
+  appNameTitle: {
+    fontSize: 19,
+    fontWeight: '700',
     letterSpacing: -0.3,
   },
-  appNameAccent: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: THEME.colors.textPrimary,
+  appNameDoty: {
+    fontSize: 19,
+    fontWeight: '700',
     letterSpacing: -0.3,
   },
-  appTagline: {
-    fontSize: 12,
-    color: THEME.colors.textMuted,
+  appNameNotes: {
+    fontSize: 19,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
+  appSubtitle: {
+    fontSize: 11,
     fontWeight: '500',
-    marginTop: 1,
+    marginTop: 0.5,
+    letterSpacing: -0.1,
   },
-  statusPill: {
+  statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: THEME.colors.primarySoft,
-    paddingHorizontal: THEME.spacing.md,
-    paddingVertical: 6,
-    borderRadius: THEME.borderRadius.full,
-    gap: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4.5,
+    borderRadius: 7,
+    borderWidth: 1,
   },
-  activeIndicatorDot: {
+  activeDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: THEME.colors.primary,
+    marginRight: 6,
   },
-  statusPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: THEME.colors.primaryDark,
-  },
-  summaryBar: {
-    marginTop: THEME.spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-  },
-  greetingText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: THEME.colors.textPrimary,
-  },
-  statsSummary: {
-    fontSize: 12,
+  statusBadgeText: {
+    fontSize: 11.5,
     fontWeight: '600',
-    color: THEME.colors.textSecondary,
+    letterSpacing: -0.1,
   },
 });

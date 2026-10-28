@@ -1,19 +1,24 @@
 import React from 'react';
-import { StyleSheet, TouchableOpacity, View, Text } from 'react-native';
-import { THEME } from '../constants/theme';
+import { StyleSheet, TouchableOpacity, View, Platform } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
 
-export default function FloatingActionButton({ onPress }) {
+export default function FloatingActionButton({ onPress, style }) {
+  const { theme } = useTheme();
+
   return (
     <TouchableOpacity
-      style={styles.fabContainer}
+      style={[
+        styles.fabContainer,
+        { backgroundColor: theme.colors.primary },
+        style,
+      ]}
       onPress={onPress}
-      activeOpacity={0.85}
+      activeOpacity={0.82}
       accessibilityRole="button"
-      accessibilityLabel="Create new note"
-      accessibilityHint="Opens temporary note creator"
+      accessibilityLabel="Create note"
+      accessibilityHint="Opens note editor"
     >
       <View style={styles.fabInner}>
-        {/* Stylized plus icon using clean React Native view elements */}
         <View style={styles.plusHorizontal} />
         <View style={styles.plusVertical} />
       </View>
@@ -24,36 +29,39 @@ export default function FloatingActionButton({ onPress }) {
 const styles = StyleSheet.create({
   fabContainer: {
     position: 'absolute',
-    bottom: 24,
+    bottom: Platform.OS === 'android' ? 76 : 88,
     right: 20,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: THEME.colors.primary,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    ...THEME.shadows.fab,
+    shadowColor: '#6D28D9',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 4,
     zIndex: 999,
   },
   fabInner: {
-    width: 24,
-    height: 24,
+    width: 20,
+    height: 20,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
   plusHorizontal: {
-    width: 20,
-    height: 3.5,
+    width: 16,
+    height: 2.8,
     backgroundColor: '#FFFFFF',
-    borderRadius: 2,
+    borderRadius: 1.5,
     position: 'absolute',
   },
   plusVertical: {
-    width: 3.5,
-    height: 20,
+    width: 2.8,
+    height: 16,
     backgroundColor: '#FFFFFF',
-    borderRadius: 2,
+    borderRadius: 1.5,
     position: 'absolute',
   },
 });

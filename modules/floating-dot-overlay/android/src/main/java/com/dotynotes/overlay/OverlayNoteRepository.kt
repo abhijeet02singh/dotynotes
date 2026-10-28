@@ -47,8 +47,24 @@ class OverlayNoteRepository private constructor(private val context: Context) {
     private var onMutationListener: ((type: String, data: String) -> Unit)? = null
     private var onRecentNotesUpdatedListener: (() -> Unit)? = null
 
+    private val prefs = context.getSharedPreferences("dotynotes_overlay_theme_prefs", Context.MODE_PRIVATE)
+    private val themeUpdatedListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    @Volatile
+    private var overlayColorTheme: String = "purple"
+
+    @Volatile
+    private var overlayTheme: String = "system"
+
     init {
         loadRecentNotesFromDisk()
+        overlayColorTheme = prefs.getString("saved_color_theme", "purple") ?: "purple"
+        val savedPayload = prefs.getString("saved_theme_payload", null)
+        overlayTheme = if (!savedPayload.isNullOrBlank()) {
+            savedPayload
+        } else {
+            prefs.getString("saved_appearance_mode", "system") ?: "system"
+        }
     }
 
     companion object {
@@ -77,6 +93,85 @@ class OverlayNoteRepository private constructor(private val context: Context) {
 
     fun setOnRecentNotesUpdatedListener(listener: (() -> Unit)?) {
         this.onRecentNotesUpdatedListener = listener
+    }
+
+    fun addThemeUpdatedListener(listener: () -> Unit) {
+        if (!themeUpdatedListeners.contains(listener)) {
+            themeUpdatedListeners.add(listener)
+        }
+    }
+
+    fun removeThemeUpdatedListener(listener: () -> Unit) {
+        themeUpdatedListeners.remove(listener)
+    }
+
+    fun setOnThemeUpdatedListener(listener: (() -> Unit)?) {
+        if (listener != null) {
+            addThemeUpdatedListener(listener)
+        }
+    }
+
+    fun setOverlayTheme(theme: String) {
+        this.overlayTheme = theme
+        val trimmed = theme.trim()
+
+        // Extract colorTheme and appearanceMode if present
+        var extractedColor = overlayColorTheme
+        var extractedMode = "system"
+
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+                val json = JSONObject(trimmed)
+                if (json.has("colorTheme")) {
+                    extractedColor = json.getString("colorTheme").lowercase()
+                }
+                if (json.has("appearanceMode")) {
+                    extractedMode = json.getString("appearanceMode").lowercase()
+                }
+            } catch (_: Exception) {}
+        } else if (trimmed.contains(":")) {
+            val parts = trimmed.split(":")
+            extractedMode = parts[0].lowercase()
+            extractedColor = parts[1].lowercase()
+        } else {
+            when (trimmed.lowercase()) {
+                "dark" -> extractedMode = "dark"
+                "light" -> extractedMode = "light"
+                "system" -> extractedMode = "system"
+                "purple", "sky", "orange", "mint", "pink", "periwinkle", "green" -> {
+                    extractedColor = trimmed.lowercase()
+                }
+            }
+        }
+
+        this.overlayColorTheme = extractedColor
+
+        try {
+            prefs.edit()
+                .putString("saved_theme_payload", theme)
+                .putString("saved_color_theme", extractedColor)
+                .putString("saved_appearance_mode", extractedMode)
+                .apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not persist overlay theme to SharedPreferences: ${e.message}")
+        }
+
+        for (listener in themeUpdatedListeners) {
+            try {
+                listener.invoke()
+            } catch (e: Exception) {
+                Log.w(TAG, "Theme listener error: ${e.message}")
+            }
+        }
+        onRecentNotesUpdatedListener?.invoke()
+    }
+
+    fun getOverlayTheme(): String = overlayTheme
+
+    fun getOverlayColorTheme(): String = overlayColorTheme
+
+    fun getResolvedTheme(isSystemDark: Boolean): OverlayTheme {
+        return OverlayTheme.resolveTheme(overlayTheme, isSystemDark, overlayColorTheme)
     }
 
     @Synchronized
@@ -176,7 +271,14 @@ class OverlayNoteRepository private constructor(private val context: Context) {
      * Saves a new quick note from the floating overlay.
      */
     @Synchronized
-    fun saveQuickNote(title: String, content: String): OverlayNote? {
+    fun saveQuickNote(
+        title: String,
+        content: String,
+        colorSchemeId: String = "purple",
+        tag: String = "Floating",
+        isPinned: Boolean = false,
+        isArchived: Boolean = false
+    ): OverlayNote? {
         return try {
             val now = System.currentTimeMillis()
             val id = "note_${now}_${(1000..9999).random()}"
@@ -184,10 +286,10 @@ class OverlayNoteRepository private constructor(private val context: Context) {
                 id = id,
                 title = title.trim().ifEmpty { "Quick Note" },
                 content = content.trim(),
-                colorSchemeId = "purple",
-                tag = "Floating",
-                isPinned = false,
-                isArchived = false,
+                colorSchemeId = colorSchemeId.ifEmpty { "purple" },
+                tag = tag.ifEmpty { "Floating" },
+                isPinned = isPinned,
+                isArchived = isArchived,
                 createdAt = now,
                 updatedAt = now
             )
@@ -215,7 +317,15 @@ class OverlayNoteRepository private constructor(private val context: Context) {
      * Updates an existing note from the floating overlay.
      */
     @Synchronized
-    fun updateQuickNote(id: String, title: String, content: String): Boolean {
+    fun updateQuickNote(
+        id: String,
+        title: String,
+        content: String,
+        colorSchemeId: String? = null,
+        tag: String? = null,
+        isPinned: Boolean? = null,
+        isArchived: Boolean? = null
+    ): Boolean {
         return try {
             val now = System.currentTimeMillis()
             val existing = inMemoryRecentNotes.find { it.id == id }
@@ -225,10 +335,10 @@ class OverlayNoteRepository private constructor(private val context: Context) {
                 id = id,
                 title = title.trim().ifEmpty { "Quick Note" },
                 content = content.trim(),
-                colorSchemeId = existing?.colorSchemeId ?: "purple",
-                tag = existing?.tag ?: "Floating",
-                isPinned = existing?.isPinned ?: false,
-                isArchived = existing?.isArchived ?: false,
+                colorSchemeId = colorSchemeId ?: existing?.colorSchemeId ?: "purple",
+                tag = tag ?: existing?.tag ?: "Floating",
+                isPinned = isPinned ?: existing?.isPinned ?: false,
+                isArchived = isArchived ?: existing?.isArchived ?: false,
                 createdAt = existing?.createdAt ?: now,
                 updatedAt = now
             )
@@ -264,6 +374,54 @@ class OverlayNoteRepository private constructor(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update quick note: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Toggles the archive / completed status of a note from the floating overlay.
+     */
+    @Synchronized
+    fun toggleArchiveQuickNote(id: String): Boolean {
+        return try {
+            val note = inMemoryRecentNotes.find { it.id == id }
+                ?: getPendingNotes().find { it.id == id }
+                ?: return false
+
+            val updatedNote = note.copy(
+                isArchived = !note.isArchived,
+                updatedAt = System.currentTimeMillis()
+            )
+
+            val idx = inMemoryRecentNotes.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                inMemoryRecentNotes[idx] = updatedNote
+            } else {
+                inMemoryRecentNotes.add(0, updatedNote)
+            }
+            saveInMemoryRecentToDisk()
+
+            val pendingArray = loadJsonArray(pendingNotesFile)
+            var replaced = false
+            for (i in 0 until pendingArray.length()) {
+                val obj = pendingArray.getJSONObject(i)
+                if (obj.optString("id") == id) {
+                    pendingArray.put(i, updatedNote.toJsonObject())
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) {
+                pendingArray.put(updatedNote.toJsonObject())
+            }
+            pendingNotesFile.writeText(pendingArray.toString(2))
+
+            Log.i(TAG, "Toggled archive for note: $id, now archived: ${updatedNote.isArchived}")
+            onMutationListener?.invoke("ARCHIVE", updatedNote.toJsonObject().toString())
+            onRecentNotesUpdatedListener?.invoke()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed toggling archive for quick note: ${e.message}")
             false
         }
     }

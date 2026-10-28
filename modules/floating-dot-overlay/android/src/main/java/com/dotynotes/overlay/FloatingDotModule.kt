@@ -49,6 +49,24 @@ class FloatingDotModule : Module() {
             }
         }
 
+        Function("canScheduleExactAlarms") {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+                alarmManager?.canScheduleExactAlarms() ?: false
+            } else {
+                true
+            }
+        }
+
+        Function("isBatteryOptimizationIgnored") {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+            } else {
+                true
+            }
+        }
+
         Function("requestPermission") {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 val intent = Intent(
@@ -93,6 +111,22 @@ class FloatingDotModule : Module() {
             FloatingDotService.isRunning
         }
 
+        Function("setOverlayTheme") { themeName: String ->
+            OverlayNoteRepository.getInstance(context).setOverlayTheme(themeName)
+            if (FloatingDotService.isRunning) {
+                try {
+                    val serviceIntent = Intent(context, FloatingDotService::class.java).apply {
+                        action = FloatingDotService.ACTION_UPDATE_THEME
+                        putExtra(FloatingDotService.EXTRA_THEME, themeName)
+                    }
+                    context.startService(serviceIntent)
+                } catch (e: Exception) {
+                    android.util.Log.w("FloatingDotModule", "Could not send theme update to service: ${e.message}")
+                }
+            }
+            true
+        }
+
         AsyncFunction("repairDatabase") {
             val report = DatabaseRecoveryHelper.repairDatabase(context)
             report.toMap()
@@ -133,6 +167,30 @@ class FloatingDotModule : Module() {
 
         AsyncFunction("cleanupStaleWalFiles") {
             DatabaseRecoveryHelper.cleanupStaleWalFiles(context)
+        }
+
+        View(DotyRichTextView::class) {
+            Events("onContentChange", "onActiveStylesChange")
+
+            Prop("html") { view: DotyRichTextView, html: String? ->
+                view.setHtmlContent(html)
+            }
+
+            Prop("placeholder") { view: DotyRichTextView, placeholder: String? ->
+                view.setPlaceholderText(placeholder)
+            }
+
+            Prop("textColor") { view: DotyRichTextView, color: String? ->
+                view.setTextColorHex(color)
+            }
+
+            Prop("fontSize") { view: DotyRichTextView, size: Float? ->
+                view.setEditorFontSize(size)
+            }
+
+            Prop("action") { view: DotyRichTextView, action: Map<String, Any?>? ->
+                view.handleAction(action)
+            }
         }
     }
 }

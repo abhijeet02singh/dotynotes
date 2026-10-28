@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -20,31 +20,40 @@ import EmptyState from '../components/EmptyState';
 import FloatingActionButton from '../components/FloatingActionButton';
 import NoteEditorModal from '../components/NoteEditorModal';
 import BottomNavigation from '../components/BottomNavigation';
+import AppIcon from '../components/AppIcon';
 import FloatingDotScreen from './FloatingDotScreen';
+import SettingsScreen from './SettingsScreen';
+import AboutScreen from './AboutScreen';
+import PrivacyPolicyScreen from './PrivacyPolicyScreen';
+import OnboardingScreen from './OnboardingScreen';
 import {
   initDatabase,
-  closeDatabaseAsync,
   getAllNotesAsync,
   createNoteAsync,
   updateNoteAsync,
   deleteNoteAsync,
-  togglePinNoteAsync,
-  toggleArchiveNoteAsync,
   flushPendingOverlayMutations,
   exportAllNotesToJsonAsync,
+  getSettingAsync,
 } from '../services/notesDb';
 import {
   addOverlayNoteListener,
   addOverlayMutationListener,
   isNativeModuleAvailable,
-  repairDatabaseAsync,
   performSafeRepairAsync,
   createDatabaseBackupAsync,
-  cleanupStaleWalFilesAsync,
 } from '../../modules/floating-dot-overlay';
-import { THEME } from '../constants/theme';
+import {
+  scheduleNoteReminderAsync,
+  cancelNoteReminderAsync,
+  formatReminderDate,
+} from '../services/notificationService';
+import { THEME, COLORS, getPastelColor } from '../constants/theme';
+import { stripRichText } from '../utils/richText';
+import { useTheme } from '../context/ThemeContext';
 
 export default function HomeScreen() {
+  const { theme, isDark, defaultStickyColor } = useTheme();
   const [notes, setNotes] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
@@ -56,8 +65,35 @@ export default function HomeScreen() {
   const [isEditorVisible, setIsEditorVisible] = useState(false);
   const [isStorageModalVisible, setIsStorageModalVisible] = useState(false);
   const [noteToEdit, setNoteToEdit] = useState(null);
-  const [selectedNote, setSelectedNote] = useState(null);
   const [currentNav, setCurrentNav] = useState('notes');
+  const navHistoryRef = useRef(['notes']);
+  const [defaultNoteColor, setDefaultNoteColor] = useState('lavender');
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const isSavingRef = useRef(false);
+
+  // Navigation helpers for sub-screens (About, Privacy Policy)
+  const navigateTo = (navKey) => {
+    navHistoryRef.current.push(navKey);
+    setCurrentNav(navKey);
+  };
+
+  const navigateBack = () => {
+    if (navHistoryRef.current.length <= 1) {
+      setCurrentNav('settings');
+      navHistoryRef.current = ['notes', 'settings'];
+      return;
+    }
+    navHistoryRef.current.pop();
+    const targetNav = navHistoryRef.current[navHistoryRef.current.length - 1];
+    setCurrentNav(targetNav);
+  };
+
+  // Load persistent default note color
+  useEffect(() => {
+    getSettingAsync('default_note_color', 'purple').then((savedColor) => {
+      if (savedColor) setDefaultNoteColor(savedColor);
+    });
+  }, []);
 
   // Load notes from SQLite with optional silent background refresh
   const loadNotesFromDb = useCallback(async (showSpinner = false) => {
@@ -68,6 +104,7 @@ export default function HomeScreen() {
       await flushPendingOverlayMutations();
       const loadedNotes = await getAllNotesAsync();
       setNotes(loadedNotes);
+      setCurrentTime(Date.now());
     } catch (err) {
       console.error('SQLite initialization/fetch error:', err);
       setDbError(err.message || 'Failed to access local SQLite database.');
@@ -94,7 +131,7 @@ export default function HomeScreen() {
         'Database Repaired Successfully',
         `A safe backup was created in: ${backupDir}\n\n` +
         `Recovered and restored: ${noteCount} note(s).\n` +
-        `The database has been restored to a healthy state with zero data loss.`,
+        `The database has been restored to a healthy state.`,
         [
           {
             text: 'OK',
@@ -138,9 +175,11 @@ export default function HomeScreen() {
       const json = await exportAllNotesToJsonAsync();
       setIsLoading(false);
       const parsed = JSON.parse(json);
+      const noteCount =
+        parsed.metadata?.totalNotes ?? parsed.totalNotes ?? parsed.data?.notes?.length ?? 0;
       Alert.alert(
         'Notes Exported',
-        `Successfully exported ${parsed.totalNotes} notes in standard DotyNotes JSON format.\n\nAll titles, content, timestamps, and tags are preserved.`
+        `Successfully exported ${noteCount} notes in versioned DotyNotes JSON format.\n\nAll titles, content, timestamps, and tags are preserved.`
       );
     } catch (err) {
       setIsLoading(false);
@@ -177,74 +216,213 @@ export default function HomeScreen() {
     };
   }, [loadNotesFromDb]);
 
-  // Compute live counts for category tabs
+  // Compute live counts for category tabs and reminders
   const counts = useMemo(() => {
     return {
       all: notes.filter((n) => !n.isArchived).length,
       pinned: notes.filter((n) => n.isPinned && !n.isArchived).length,
       archived: notes.filter((n) => n.isArchived).length,
+      reminders: notes.filter((n) => !n.isArchived && n.reminderAt != null && Number(n.reminderAt) > currentTime).length,
     };
-  }, [notes]);
+  }, [notes, currentTime]);
 
-  // Filter notes based on activeTab and searchQuery
+  // Filter notes based on currentNav, activeTab, and searchQuery
+  // Filter notes based on currentNav, activeTab, and searchQuery
   const filteredNotes = useMemo(() => {
-    return notes.filter((note) => {
-      // Tab filter
-      if (activeTab === 'pinned' && (!note.isPinned || note.isArchived)) {
-        return false;
-      }
-      if (activeTab === 'archived' && !note.isArchived) {
-        return false;
-      }
-      if (activeTab === 'all' && note.isArchived) {
-        return false;
-      }
+    return notes
+      .filter((note) => {
+        // Reminders view: active, non-archived notes with scheduled reminders
+        if (currentNav === 'reminders') {
+          if (note.isArchived) return false;
+          if (note.reminderAt == null) return false;
+          const reminderTime = Number(note.reminderAt);
+          if (isNaN(reminderTime)) return false;
+        } else {
+          // Standard Notes view: filter by activeTab
+          if (activeTab === 'pinned' && (!note.isPinned || note.isArchived)) {
+            return false;
+          }
+          if (activeTab === 'archived' && !note.isArchived) {
+            return false;
+          }
+          if (activeTab === 'all' && note.isArchived) {
+            return false;
+          }
+        }
 
-      // Search query filter
-      if (searchQuery.trim().length > 0) {
-        const query = searchQuery.toLowerCase().trim();
-        const matchesTitle = note.title?.toLowerCase().includes(query);
-        const matchesContent = note.content?.toLowerCase().includes(query);
-        const matchesTag = note.tag?.toLowerCase().includes(query);
-        return matchesTitle || matchesContent || matchesTag;
-      }
+        // Search query filter
+        if (searchQuery.trim().length > 0) {
+          const query = searchQuery.toLowerCase().trim();
+          const matchesTitle = note.title?.toLowerCase().includes(query);
+          const matchesContent = stripRichText(note.content).toLowerCase().includes(query);
+          const matchesTag = note.tag?.toLowerCase().includes(query);
+          return matchesTitle || matchesContent || matchesTag;
+        }
 
-      return true;
-    });
-  }, [notes, activeTab, searchQuery]);
+        return true;
+      })
+      .sort((a, b) => {
+        // In reminders view, sort by scheduled reminder time (soonest first)
+        if (currentNav === 'reminders') {
+          return Number(a.reminderAt) - Number(b.reminderAt);
+        }
+        return 0; // maintain default SQLite order
+      });
+  }, [notes, activeTab, searchQuery, currentNav]);
+
+  // Distinguish upcoming vs past reminders
+  const upcomingReminders = useMemo(() => {
+    if (currentNav !== 'reminders') return [];
+    return filteredNotes
+      .filter((n) => Number(n.reminderAt) > currentTime)
+      .sort((a, b) => Number(a.reminderAt) - Number(b.reminderAt));
+  }, [filteredNotes, currentNav, currentTime]);
+
+  const pastReminders = useMemo(() => {
+    if (currentNav !== 'reminders') return [];
+    return filteredNotes
+      .filter((n) => Number(n.reminderAt) <= currentTime)
+      .sort((a, b) => Number(b.reminderAt) - Number(a.reminderAt));
+  }, [filteredNotes, currentNav, currentTime]);
 
   // Handle note save (both Create and Update)
   const handleSaveNote = async (noteData) => {
+    if (isSavingRef.current) return;
+    isSavingRef.current = true;
+
     try {
       if (noteToEdit) {
+        let finalNotificationId = noteToEdit.notificationId || null;
+        let finalReminderAt = noteData.reminderAt != null ? Number(noteData.reminderAt) : null;
+
+        const reminderTimestampChanged =
+          finalReminderAt !== (noteToEdit.reminderAt != null ? Number(noteToEdit.reminderAt) : null);
+        const contentChanged =
+          noteData.title !== noteToEdit.title || noteData.content !== noteToEdit.content;
+
+        if (finalReminderAt === null) {
+          // Reminder was explicitly removed or cancelled
+          if (noteToEdit.notificationId) {
+            await cancelNoteReminderAsync(noteToEdit.notificationId);
+          }
+          finalNotificationId = null;
+        } else if (reminderTimestampChanged || (contentChanged && noteToEdit.notificationId)) {
+          // Reminder timestamp changed or note content updated with existing reminder
+          const schedResult = await scheduleNoteReminderAsync({
+            noteId: noteToEdit.id,
+            title: noteData.title || noteToEdit.title,
+            content: noteData.content || noteToEdit.content,
+            reminderAt: finalReminderAt,
+            existingNotificationId: noteToEdit.notificationId,
+          });
+
+          if (schedResult.success && schedResult.notificationId) {
+            finalNotificationId = schedResult.notificationId;
+          } else {
+            // Scheduling failed or permission denied
+            finalNotificationId = null;
+            finalReminderAt = null;
+
+            if (schedResult.reason === 'native_module_missing') {
+              Alert.alert(
+                'New Build Required',
+                'Your note has been saved. Reminders require a new development build containing the expo-notifications module.'
+              );
+            } else if (schedResult.reason === 'permission_denied') {
+              Alert.alert(
+                'Permission Required',
+                'The note was saved, but notification permission is required to deliver reminders. Please enable notifications in device Settings.'
+              );
+            } else {
+              Alert.alert(
+                'Reminder Notice',
+                'The note was saved, but the reminder could not be scheduled: ' +
+                  (schedResult.error || schedResult.reason || 'Unknown error')
+              );
+            }
+          }
+        }
+
         // Update existing note in SQLite
-        const updated = await updateNoteAsync(noteToEdit.id, noteData);
+        const updated = await updateNoteAsync(noteToEdit.id, {
+          ...noteData,
+          reminderAt: finalReminderAt,
+          notificationId: finalNotificationId,
+        });
+
         setNotes((prev) =>
           prev.map((n) => (n.id === updated.id ? updated : n))
         );
-        if (selectedNote?.id === updated.id) {
-          setSelectedNote(updated);
-        }
       } else {
-        // Create new note in SQLite
-        const created = await createNoteAsync(noteData);
-        setNotes((prev) => [created, ...prev]);
+        // Create new note with unique ID upfront
+        const newNoteId = `note_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        let scheduledNotificationId = null;
+        let scheduledReminderAt = null;
+
+        if (noteData.reminderAt) {
+          const schedResult = await scheduleNoteReminderAsync({
+            noteId: newNoteId,
+            title: noteData.title || 'Untitled Note',
+            content: noteData.content || '',
+            reminderAt: noteData.reminderAt,
+          });
+
+          if (schedResult.success && schedResult.notificationId) {
+            scheduledNotificationId = schedResult.notificationId;
+            scheduledReminderAt = Number(noteData.reminderAt);
+          } else {
+            // Scheduling failed: do not persist fake reminder
+            scheduledNotificationId = null;
+            scheduledReminderAt = null;
+
+            if (schedResult.reason === 'native_module_missing') {
+              Alert.alert(
+                'New Build Required',
+                'Your note has been saved. Reminders require a new development build containing the expo-notifications module.'
+              );
+            } else if (schedResult.reason === 'permission_denied') {
+              Alert.alert(
+                'Permission Required',
+                'The note was saved, but notification permission is required to deliver reminders. Please enable notifications in device Settings.'
+              );
+            } else {
+              Alert.alert(
+                'Reminder Notice',
+                'The note was saved, but the reminder could not be scheduled: ' +
+                  (schedResult.error || schedResult.reason || 'Unknown error')
+              );
+            }
+          }
+        }
+
+        // Persist note to SQLite in a single atomic insertion
+        const created = await createNoteAsync({
+          id: newNoteId,
+          ...noteData,
+          reminderAt: scheduledReminderAt,
+          notificationId: scheduledNotificationId,
+        });
+
+        setNotes((prev) => [created, ...prev.filter((n) => n.id !== created.id)]);
       }
     } catch (err) {
       console.error('Error saving note:', err);
       Alert.alert('Database Error', 'Could not save note to SQLite: ' + (err.message || ''));
       throw err;
+    } finally {
+      isSavingRef.current = false;
     }
   };
 
   // Handle note deletion
   const handleDeleteNote = async (id) => {
     try {
+      const noteToDelete = notes.find((n) => n.id === id);
+      if (noteToDelete?.notificationId) {
+        await cancelNoteReminderAsync(noteToDelete.notificationId);
+      }
       await deleteNoteAsync(id);
       setNotes((prev) => prev.filter((n) => n.id !== id));
-      if (selectedNote?.id === id) {
-        setSelectedNote(null);
-      }
     } catch (err) {
       console.error('Error deleting note:', err);
       Alert.alert('Database Error', 'Could not delete note: ' + (err.message || ''));
@@ -252,42 +430,107 @@ export default function HomeScreen() {
     }
   };
 
-  // Toggle pin state with persistent update
-  const handleTogglePin = async (note) => {
+
+  // Cancel/clear a note reminder directly from the list
+  const handleCancelReminder = async (note) => {
     try {
-      const updated = await togglePinNoteAsync(note.id, note.isPinned);
-      setNotes((prev) =>
-        prev.map((n) => (n.id === updated.id ? updated : n))
-      );
-      if (selectedNote?.id === updated.id) {
-        setSelectedNote(updated);
+      if (note.notificationId) {
+        await cancelNoteReminderAsync(note.notificationId);
       }
+      const updated = await updateNoteAsync(note.id, {
+        reminderAt: null,
+        notificationId: null,
+      });
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? updated : n)));
     } catch (err) {
-      console.error('Error toggling pin:', err);
-      Alert.alert('Database Error', 'Failed to update pin status: ' + (err.message || ''));
+      console.error('Error canceling reminder:', err);
     }
   };
 
-  // Toggle archive state with persistent update
-  const handleToggleArchive = async (note) => {
-    try {
-      const updated = await toggleArchiveNoteAsync(note.id, note.isArchived);
-      setNotes((prev) =>
-        prev.map((n) => (n.id === updated.id ? updated : n))
-      );
-      if (selectedNote?.id === updated.id) {
-        setSelectedNote(updated);
-      }
-    } catch (err) {
-      console.error('Error toggling archive:', err);
-      Alert.alert('Database Error', 'Failed to update archive status: ' + (err.message || ''));
-    }
+  // Render individual reminder card with sticky color strip, formatted alert time, and quick actions
+  const renderReminderCard = (note, isPast = false) => {
+    const colorScheme = getPastelColor(note.colorSchemeId);
+    return (
+      <TouchableOpacity
+        key={note.id}
+        style={[
+          styles.reminderCard,
+          {
+            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.border,
+            borderLeftWidth: 4,
+            borderLeftColor: colorScheme.accent || colorScheme.border,
+          },
+        ]}
+        onPress={() => handleStartEdit(note)}
+        activeOpacity={0.75}
+        accessibilityRole="button"
+        accessibilityLabel={`Reminder: ${note.title || 'Untitled'}`}
+      >
+        <View style={styles.reminderCardLeft}>
+          <View
+            style={[
+              styles.reminderIconBox,
+              {
+                backgroundColor: isPast
+                  ? (isDark ? 'rgba(156, 163, 175, 0.16)' : '#F3F4F6')
+                  : (isDark ? 'rgba(139, 92, 246, 0.16)' : theme.colors.primarySoft || '#F1EAFE'),
+              },
+            ]}
+          >
+            <AppIcon
+              name="clock"
+              size={18}
+              color={isPast ? theme.colors.textSecondary : theme.colors.primary}
+            />
+          </View>
+          <View style={styles.reminderTextCol}>
+            <Text style={[styles.reminderTitle, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+              {note.title || 'Untitled Note'}
+            </Text>
+            <Text style={[styles.reminderBody, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+              {stripRichText(note.content) || 'No content'}
+            </Text>
+            <View style={styles.schedulePill}>
+              <AppIcon
+                name="clock"
+                size={10}
+                color={isPast ? theme.colors.textSecondary : theme.colors.primary}
+              />
+              <Text
+                style={[
+                  styles.reminderScheduleText,
+                  { color: isPast ? theme.colors.textSecondary : theme.colors.primary },
+                ]}
+              >
+                {isPast ? 'Triggered: ' : ''}{formatReminderDate(note.reminderAt)}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.reminderRightActions}>
+          <TouchableOpacity
+            style={[
+              styles.reminderCancelBtn,
+              { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)' },
+            ]}
+            onPress={() => handleCancelReminder(note)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Remove reminder"
+          >
+            <AppIcon name="close" size={10} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+          <AppIcon name="chevron-right" size={12} color={theme.colors.textSecondary} />
+        </View>
+      </TouchableOpacity>
+    );
   };
 
   // Open note for editing
   const handleStartEdit = (note) => {
     setNoteToEdit(note);
-    setSelectedNote(null);
     setIsEditorVisible(true);
   };
 
@@ -302,6 +545,9 @@ export default function HomeScreen() {
     if (searchQuery.trim().length > 0) {
       return `Search Results (${filteredNotes.length})`;
     }
+    if (currentNav === 'reminders') {
+      return `Active Reminders (${filteredNotes.length})`;
+    }
     switch (activeTab) {
       case 'pinned':
         return `Pinned Notes (${filteredNotes.length})`;
@@ -313,32 +559,36 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={styles.safeArea}>
-      <View style={styles.container}>
-        {/* Header with branding, total counts, and storage modal trigger */}
-        <AppHeader
-          totalCount={counts.all}
-          pinnedCount={counts.pinned}
-          onStoragePress={() => setIsStorageModalVisible(true)}
-        />
+    <View style={[styles.safeArea, { backgroundColor: theme.colors.surface }]}>
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        {/* Header with branding, total counts, and storage modal trigger (only on notes/reminders) */}
+        {(currentNav === 'notes' || currentNav === 'reminders') && (
+          <AppHeader
+            currentNav={currentNav}
+            totalCount={counts.all}
+            pinnedCount={counts.pinned}
+            reminderCount={counts.reminders}
+            onStoragePress={() => navigateTo('settings')}
+          />
+        )}
 
         {/* Database Error Banner if SQLite fails */}
         {dbError && (
-          <View style={styles.errorBanner}>
+          <View style={[styles.errorBanner, { backgroundColor: isDark ? 'rgba(248, 113, 113, 0.15)' : '#FEF2F2', borderBottomColor: isDark ? 'rgba(248, 113, 113, 0.3)' : '#FECDD3' }]}>
             <View style={styles.errorContent}>
-              <Text style={styles.errorText}>⚠️ SQLite Error: {dbError}</Text>
+              <Text style={[styles.errorText, { color: theme.colors.dangerText }]}>⚠️ SQLite Error: {dbError}</Text>
               <View style={styles.errorButtonsRow}>
                 <TouchableOpacity
-                  style={styles.retryButton}
-                  onPress={loadNotesFromDb}
+                  style={[styles.retryButton, { backgroundColor: isDark ? 'rgba(248, 113, 113, 0.2)' : '#FEE2E2', borderColor: isDark ? 'rgba(248, 113, 113, 0.4)' : '#FECDD3' }]}
+                  onPress={() => loadNotesFromDb(true)}
                   accessibilityRole="button"
                   accessibilityLabel="Retry loading database"
                 >
-                  <Text style={styles.retryButtonText}>Retry</Text>
+                  <Text style={[styles.retryButtonText, { color: theme.colors.dangerText }]}>Retry</Text>
                 </TouchableOpacity>
                 {isNativeModuleAvailable && (
                   <TouchableOpacity
-                    style={styles.recoverButton}
+                    style={[styles.recoverButton, { backgroundColor: theme.colors.primary }]}
                     onPress={handleDiagnoseAndRecover}
                     accessibilityRole="button"
                     accessibilityLabel="Diagnose and recover database"
@@ -358,11 +608,43 @@ export default function HomeScreen() {
               loadNotesFromDb();
             }}
           />
+        ) : currentNav === 'settings' ? (
+          <SettingsScreen
+            onBackToNotes={() => {
+              setCurrentNav('notes');
+              loadNotesFromDb();
+            }}
+            counts={counts}
+            onDefaultColorChange={(color) => setDefaultNoteColor(color)}
+            onNavigateToFloating={() => setCurrentNav('floating')}
+            onNavigateToAbout={() => navigateTo('about')}
+            onNavigateToPrivacy={() => navigateTo('privacy')}
+            onReplayOnboarding={() => navigateTo('onboarding')}
+          />
+        ) : currentNav === 'about' ? (
+          <AboutScreen
+            onBack={navigateBack}
+            onNavigateToPrivacy={() => navigateTo('privacy')}
+            onReplayOnboarding={() => navigateTo('onboarding')}
+          />
+        ) : currentNav === 'privacy' ? (
+          <PrivacyPolicyScreen
+            onBack={navigateBack}
+          />
+        ) : currentNav === 'onboarding' ? (
+          <OnboardingScreen
+            onComplete={() => {
+              setCurrentNav('notes');
+              navHistoryRef.current = ['notes'];
+              loadNotesFromDb();
+            }}
+            onBack={navigateBack}
+          />
         ) : (
           <>
             {/* Scrollable Content */}
             <ScrollView
-              style={styles.scrollView}
+              style={[styles.scrollView, { backgroundColor: theme.colors.background }]}
               contentContainerStyle={styles.scrollContent}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
@@ -374,52 +656,108 @@ export default function HomeScreen() {
                 onClear={() => setSearchQuery('')}
               />
 
-              {/* Category Filter Tabs */}
-              <CategoryTabs
-                activeTab={activeTab}
-                onSelectTab={setActiveTab}
-                counts={counts}
-              />
+              {/* Category Filter Tabs (only on Notes screen) */}
+              {currentNav === 'notes' && (
+                <CategoryTabs
+                  activeTab={activeTab}
+                  onSelectTab={setActiveTab}
+                  counts={counts}
+                />
+              )}
 
-              {/* Section Heading & SQLite status badge */}
+              {/* Section Heading & Subtle SQLite status indicator */}
               <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>{getSectionTitle()}</Text>
-                  <Text style={styles.sectionSubtitle}>
+                <View style={styles.sectionHeaderTextCol}>
+                  <Text style={[styles.sectionTitle, { color: theme.colors.textPrimary }]}>{getSectionTitle()}</Text>
+                  <Text style={[styles.sectionSubtitle, { color: theme.colors.textSecondary }]}>
                     {searchQuery.trim().length > 0
                       ? `Filtered by "${searchQuery}"`
-                      : 'Tap any card to view details or edit'}
+                      : currentNav === 'reminders'
+                      ? 'Upcoming scheduled alerts'
+                      : 'All notes synced to local SQLite'}
                   </Text>
                 </View>
 
-                {/* Offline SQLite Status Badge */}
+                {/* Subtle SQLite Status Indicator */}
                 <View
-                  style={styles.storageBadge}
+                  style={[styles.storageBadge, { backgroundColor: theme.colors.surfaceSecondary, borderColor: theme.colors.border }]}
                   accessibilityLabel="Offline SQLite database active"
                 >
-                  <View style={styles.storageIndicatorDot} />
-                  <Text style={styles.storageBadgeText}>SQLITE SAVED</Text>
+                  <View style={[styles.storageIndicatorDot, { backgroundColor: theme.colors.success }]} />
+                  <Text style={[styles.storageBadgeText, { color: theme.colors.textSecondary }]}>SQLite</Text>
                 </View>
               </View>
 
-              {/* Loading Indicator or Notes Grid / Empty State */}
+              {/* Loading Indicator or Notes Grid / Reminders List / Empty State */}
               {isLoading ? (
                 <View style={styles.loadingContainer}>
-                  <ActivityIndicator size="large" color={THEME.colors.primary} />
-                  <Text style={styles.loadingText}>Reading notes from SQLite...</Text>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text style={[styles.loadingText, { color: theme.colors.textSecondary }]}>Loading notes...</Text>
                 </View>
+              ) : currentNav === 'reminders' ? (
+                upcomingReminders.length > 0 || pastReminders.length > 0 ? (
+                  <View style={styles.remindersList}>
+                    {upcomingReminders.length > 0 && (
+                      <View style={styles.remindersSection}>
+                        <View style={styles.remindersSectionHeader}>
+                          <Text style={[styles.remindersSectionTitle, { color: theme.colors.textSecondary }]}>
+                            Upcoming Reminders
+                          </Text>
+                          <View style={[styles.remindersSectionBadge, { backgroundColor: theme.colors.surfaceSecondary }]}>
+                            <Text style={[styles.remindersSectionBadgeText, { color: theme.colors.primary }]}>
+                              {upcomingReminders.length}
+                            </Text>
+                          </View>
+                        </View>
+                        {upcomingReminders.map((note) => renderReminderCard(note, false))}
+                      </View>
+                    )}
+
+                    {pastReminders.length > 0 && (
+                      <View style={[styles.remindersSection, { marginTop: 16 }]}>
+                        <View style={styles.remindersSectionHeader}>
+                          <Text style={[styles.remindersSectionTitle, { color: theme.colors.textSecondary }]}>
+                            Past Reminders
+                          </Text>
+                          <View style={[styles.remindersSectionBadge, { backgroundColor: theme.colors.surfaceSecondary }]}>
+                            <Text style={[styles.remindersSectionBadgeText, { color: theme.colors.textSecondary }]}>
+                              {pastReminders.length}
+                            </Text>
+                          </View>
+                        </View>
+                        {pastReminders.map((note) => renderReminderCard(note, true))}
+                      </View>
+                    )}
+                  </View>
+                ) : (
+                  <EmptyState
+                    isSearchActive={searchQuery.trim().length > 0}
+                    activeTab={activeTab}
+                    currentNav={currentNav}
+                    onActionPress={() => {
+                      if (searchQuery.trim().length > 0) {
+                        setSearchQuery('');
+                      } else {
+                        handleStartCreate();
+                      }
+                    }}
+                  />
+                )
               ) : filteredNotes.length > 0 ? (
                 <NotesGrid
                   notes={filteredNotes}
-                  onNotePress={(note) => setSelectedNote(note)}
+                  onNotePress={handleStartEdit}
                 />
               ) : (
                 <EmptyState
                   isSearchActive={searchQuery.trim().length > 0}
                   activeTab={activeTab}
+                  currentNav={currentNav}
                   onActionPress={() => {
                     if (searchQuery.trim().length > 0) {
                       setSearchQuery('');
+                    } else if (currentNav === 'reminders') {
+                      handleStartCreate();
                     } else if (activeTab !== 'all') {
                       setActiveTab('all');
                     } else {
@@ -435,18 +773,30 @@ export default function HomeScreen() {
           </>
         )}
 
-        {/* Bottom Navigation */}
-        <BottomNavigation
-          currentNav={currentNav}
-          onNavSelect={(navKey) => {
-            setCurrentNav(navKey);
-            if (navKey === 'notes') {
-              setActiveTab('all');
-              setSearchQuery('');
-              loadNotesFromDb();
+        {/* Bottom Navigation (hidden during immersive onboarding) */}
+        {currentNav !== 'onboarding' && (
+          <BottomNavigation
+            currentNav={
+              currentNav === 'about' || currentNav === 'privacy'
+                ? 'settings'
+                : currentNav
             }
-          }}
-        />
+            onNavSelect={(navKey) => {
+              navHistoryRef.current = ['notes', navKey];
+              setCurrentNav(navKey);
+              if (navKey === 'notes') {
+                setActiveTab('all');
+                setSearchQuery('');
+                loadNotesFromDb();
+              } else if (navKey === 'reminders') {
+                setSearchQuery('');
+                loadNotesFromDb();
+              } else if (navKey === 'settings') {
+                loadNotesFromDb();
+              }
+            }}
+          />
+        )}
 
         {/* Create / Edit Note Modal */}
         <NoteEditorModal
@@ -458,134 +808,8 @@ export default function HomeScreen() {
           onSave={handleSaveNote}
           noteToEdit={noteToEdit}
           onDelete={handleDeleteNote}
+          defaultColor={defaultStickyColor || defaultNoteColor || 'lavender'}
         />
-
-        {/* Note Detail / Action Preview Modal */}
-        {selectedNote && (
-          <Modal
-            visible={!!selectedNote}
-            transparent={true}
-            animationType="fade"
-            onRequestClose={() => setSelectedNote(null)}
-          >
-            <View style={styles.modalBackdrop}>
-              <View style={styles.previewCard}>
-                {/* Header: Tag + Close button */}
-                <View style={styles.previewHeader}>
-                  <View style={styles.previewTagPill}>
-                    <Text style={styles.previewTagText}>
-                      {selectedNote.tag || 'General'}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => setSelectedNote(null)}
-                    style={styles.previewCloseBtn}
-                    accessibilityLabel="Close note preview"
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.previewCloseText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Content */}
-                <ScrollView
-                  style={styles.previewScroll}
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text style={styles.previewTitle}>{selectedNote.title}</Text>
-                  <Text style={styles.previewContent}>{selectedNote.content}</Text>
-                </ScrollView>
-
-                {/* Status metadata */}
-                <View style={styles.previewMetadata}>
-                  <Text style={styles.previewDate}>
-                    🕒 Updated: {selectedNote.dateLabel || 'Just now'}
-                  </Text>
-                  <View style={styles.badgesRow}>
-                    {selectedNote.isPinned && (
-                      <Text style={styles.previewPinnedBadge}>📌 Pinned</Text>
-                    )}
-                    {selectedNote.isArchived && (
-                      <Text style={styles.previewArchivedBadge}>🗂️ Archived</Text>
-                    )}
-                  </View>
-                </View>
-
-                {/* Action Buttons: Pin, Archive, Edit, Delete */}
-                <View style={styles.actionToolbar}>
-                  <TouchableOpacity
-                    style={styles.actionBtn}
-                    onPress={() => handleTogglePin(selectedNote)}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      selectedNote.isPinned ? 'Unpin note' : 'Pin note'
-                    }
-                  >
-                    <Text style={styles.actionBtnIcon}>
-                      {selectedNote.isPinned ? '📍' : '📌'}
-                    </Text>
-                    <Text style={styles.actionBtnText}>
-                      {selectedNote.isPinned ? 'Unpin' : 'Pin'}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.actionBtn}
-                    onPress={() => handleToggleArchive(selectedNote)}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      selectedNote.isArchived ? 'Unarchive note' : 'Archive note'
-                    }
-                  >
-                    <Text style={styles.actionBtnIcon}>
-                      {selectedNote.isArchived ? '📤' : '🗂️'}
-                    </Text>
-                    <Text style={styles.actionBtnText}>
-                      {selectedNote.isArchived ? 'Restore' : 'Archive'}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.editActionBtn]}
-                    onPress={() => handleStartEdit(selectedNote)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Edit note"
-                  >
-                    <Text style={styles.actionBtnIcon}>✏️</Text>
-                    <Text style={[styles.actionBtnText, styles.editActionBtnText]}>
-                      Edit
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.deleteActionBtn]}
-                    onPress={() => {
-                      Alert.alert(
-                        'Delete Note',
-                        `Are you sure you want to delete "${selectedNote.title}"?`,
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Delete',
-                            style: 'destructive',
-                            onPress: () => handleDeleteNote(selectedNote.id),
-                          },
-                        ]
-                      );
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Delete note"
-                  >
-                    <Text style={styles.actionBtnIcon}>🗑️</Text>
-                    <Text style={[styles.actionBtnText, styles.deleteActionBtnText]}>
-                      Delete
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </Modal>
-        )}
 
         {/* Storage & Safety Backup Modal */}
         <Modal
@@ -594,54 +818,89 @@ export default function HomeScreen() {
           animationType="fade"
           onRequestClose={() => setIsStorageModalVisible(false)}
         >
-          <View style={styles.modalBackdrop}>
-            <View style={styles.storageModalCard}>
+          <View style={[styles.modalBackdrop, { backgroundColor: theme.colors.modalBackdrop }]}>
+            <View
+              style={[
+                styles.storageModalCard,
+                {
+                  backgroundColor: theme.colors.modalBackground,
+                  borderColor: theme.colors.modalBorder,
+                },
+              ]}
+            >
               <View style={styles.storageModalHeader}>
-                <Text style={styles.storageModalTitle}>Storage & Backup 🛡️</Text>
+                <Text style={[styles.storageModalTitle, { color: theme.colors.textPrimary }]}>Storage & Backup 🛡️</Text>
                 <TouchableOpacity
-                  style={styles.closeBtn}
+                  style={[styles.closeBtn, { backgroundColor: theme.colors.surfaceSecondary }]}
                   onPress={() => setIsStorageModalVisible(false)}
                   accessibilityRole="button"
                   accessibilityLabel="Close storage modal"
                 >
-                  <Text style={styles.closeBtnText}>✕</Text>
+                  <Text style={[styles.closeBtnText, { color: theme.colors.textSecondary }]}>✕</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.storageInfoBox}>
-                <Text style={styles.storageInfoTitle}>Authoritative Storage</Text>
-                <Text style={styles.storageInfoText}>Engine: expo-sqlite (WAL Mode)</Text>
-                <Text style={styles.storageInfoText}>
+              <View
+                style={[
+                  styles.storageInfoBox,
+                  {
+                    backgroundColor: theme.colors.surfaceSecondary,
+                    borderColor: theme.colors.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.storageInfoTitle, { color: theme.colors.textPrimary }]}>Authoritative Storage</Text>
+                <Text style={[styles.storageInfoText, { color: theme.colors.textSecondary }]}>Engine: expo-sqlite (WAL Mode)</Text>
+                <Text style={[styles.storageInfoText, { color: theme.colors.textSecondary }]}>
                   Total Notes: {counts.all} active ({counts.pinned} pinned, {counts.archived} archived)
                 </Text>
-                <Text style={styles.storageInfoStatus}>● Single Source of Truth (Connected)</Text>
+                <Text style={[styles.storageInfoStatus, { color: theme.colors.successText }]}>● Single Source of Truth (Connected)</Text>
               </View>
 
               <View style={styles.storageActionsColumn}>
                 <TouchableOpacity
-                  style={styles.storageActionButton}
+                  style={[
+                    styles.storageActionButton,
+                    {
+                      backgroundColor: theme.colors.surface,
+                      borderColor: theme.colors.border,
+                    },
+                  ]}
                   onPress={handleCreateBackup}
                 >
                   <Text style={styles.storageActionIcon}>💾</Text>
                   <View style={styles.storageActionTextContainer}>
-                    <Text style={styles.storageActionTitle}>Create File Backup</Text>
-                    <Text style={styles.storageActionDesc}>Archive raw SQLite files & queues safely</Text>
+                    <Text style={[styles.storageActionTitle, { color: theme.colors.textPrimary }]}>Create File Backup</Text>
+                    <Text style={[styles.storageActionDesc, { color: theme.colors.textSecondary }]}>Archive raw SQLite files & queues safely</Text>
                   </View>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.storageActionButton}
+                  style={[
+                    styles.storageActionButton,
+                    {
+                      backgroundColor: theme.colors.surface,
+                      borderColor: theme.colors.border,
+                    },
+                  ]}
                   onPress={handleExportNotes}
                 >
                   <Text style={styles.storageActionIcon}>📤</Text>
                   <View style={styles.storageActionTextContainer}>
-                    <Text style={styles.storageActionTitle}>Export Notes (JSON)</Text>
-                    <Text style={styles.storageActionDesc}>Export structured backup for safekeeping</Text>
+                    <Text style={[styles.storageActionTitle, { color: theme.colors.textPrimary }]}>Export Notes (JSON)</Text>
+                    <Text style={[styles.storageActionDesc, { color: theme.colors.textSecondary }]}>Export structured backup for safekeeping</Text>
                   </View>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.storageActionButton, styles.repairActionButton]}
+                  style={[
+                    styles.storageActionButton,
+                    styles.repairActionButton,
+                    {
+                      backgroundColor: isDark ? 'rgba(139, 92, 246, 0.15)' : '#F5F3FF',
+                      borderColor: isDark ? 'rgba(139, 92, 246, 0.3)' : '#DDD6FE',
+                    },
+                  ]}
                   onPress={() => {
                     setIsStorageModalVisible(false);
                     handleDiagnoseAndRecover();
@@ -649,8 +908,8 @@ export default function HomeScreen() {
                 >
                   <Text style={styles.storageActionIcon}>🔧</Text>
                   <View style={styles.storageActionTextContainer}>
-                    <Text style={styles.storageActionTitle}>Diagnose & Safe Repair</Text>
-                    <Text style={styles.storageActionDesc}>Harvest notes & clear any corrupted WAL state</Text>
+                    <Text style={[styles.storageActionTitle, { color: theme.colors.textPrimary }]}>Diagnose & Safe Repair</Text>
+                    <Text style={[styles.storageActionDesc, { color: theme.colors.textSecondary }]}>Harvest notes & clear any corrupted WAL state</Text>
                   </View>
                 </TouchableOpacity>
               </View>
@@ -665,24 +924,24 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: THEME.colors.surface,
+    backgroundColor: COLORS.surface,
     paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight || 24 : 0,
   },
   container: {
     flex: 1,
-    backgroundColor: THEME.colors.background,
+    backgroundColor: COLORS.background,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 24,
+    paddingBottom: 80,
   },
   errorBanner: {
-    backgroundColor: '#FEE2E2',
+    backgroundColor: COLORS.errorLight,
     borderBottomWidth: 1,
-    borderBottomColor: '#FCA5A5',
-    paddingHorizontal: THEME.spacing.lg,
+    borderBottomColor: '#FECDD3',
+    paddingHorizontal: 16,
     paddingVertical: 10,
   },
   errorContent: {
@@ -690,8 +949,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   errorText: {
-    fontSize: 12,
-    color: '#B91C1C',
+    fontSize: 12.5,
+    color: COLORS.errorText,
     fontWeight: '600',
   },
   errorButtonsRow: {
@@ -700,69 +959,171 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   retryButton: {
-    backgroundColor: '#DC2626',
+    backgroundColor: COLORS.errorLight,
+    borderWidth: 1,
+    borderColor: '#FECDD3',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: THEME.borderRadius.sm,
+    borderRadius: 8,
   },
   retryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 11,
+    color: COLORS.errorText,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   recoverButton: {
-    backgroundColor: '#7C3AED',
+    backgroundColor: COLORS.brand,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: THEME.borderRadius.sm,
+    borderRadius: 8,
   },
   recoverButtonText: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: THEME.spacing.lg,
-    paddingTop: THEME.spacing.sm,
-    paddingBottom: THEME.spacing.xs,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  sectionHeaderTextCol: {
+    flex: 1,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: THEME.colors.textPrimary,
+    fontSize: 15.5,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
     letterSpacing: -0.2,
   },
   sectionSubtitle: {
-    fontSize: 11,
-    color: THEME.colors.textMuted,
-    fontWeight: '500',
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    fontWeight: '400',
     marginTop: 1,
   },
   storageBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    backgroundColor: COLORS.surface,
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 3.5,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
+    borderColor: COLORS.border,
     gap: 5,
   },
   storageIndicatorDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#10B981',
+    backgroundColor: COLORS.success,
   },
   storageBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#047857',
+    fontSize: 10.5,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    letterSpacing: 0.2,
+  },
+  remindersList: {
+    paddingHorizontal: 16,
+    gap: 10,
+    marginTop: 4,
+  },
+  reminderCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 13,
+  },
+  reminderCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
+  },
+  reminderIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: COLORS.brandLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  reminderIconEmoji: {
+    fontSize: 18,
+  },
+  reminderTextCol: {
+    flex: 1,
+  },
+  reminderTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+    letterSpacing: -0.2,
+  },
+  reminderBody: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  schedulePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  reminderScheduleText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: COLORS.brand,
+    letterSpacing: -0.1,
+  },
+  remindersSection: {
+    gap: 8,
+  },
+  remindersSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    marginBottom: 6,
+  },
+  remindersSectionTitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
     letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  remindersSectionBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  remindersSectionBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  reminderRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  reminderCancelBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   loadingContainer: {
     alignItems: 'center',
@@ -830,8 +1191,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     color: THEME.colors.textPrimary,
-    marginBottom: THEME.spacing.sm,
+    marginBottom: 4,
     lineHeight: 24,
+  },
+  previewDivider: {
+    height: 1,
+    marginVertical: 10,
   },
   previewContent: {
     fontSize: 14,
@@ -847,10 +1212,20 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: THEME.colors.borderLight,
   },
+  previewMetaLeft: {
+    flex: 1,
+    marginRight: 10,
+  },
   previewDate: {
     fontSize: 11,
     color: THEME.colors.textMuted,
     fontWeight: '500',
+  },
+  previewReminder: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: THEME.colors.primary,
+    marginTop: 3,
   },
   badgesRow: {
     flexDirection: 'row',
@@ -962,7 +1337,7 @@ const styles = StyleSheet.create({
   },
   storageInfoStatus: {
     fontSize: 12,
-    color: '#059669',
+    color: THEME.colors.successText,
     fontWeight: '700',
     marginTop: 4,
   },
@@ -972,15 +1347,15 @@ const styles = StyleSheet.create({
   storageActionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
+    backgroundColor: THEME.colors.surface,
     borderRadius: THEME.borderRadius.md,
     padding: THEME.spacing.md,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: THEME.colors.border,
   },
   repairActionButton: {
-    backgroundColor: '#FAF5FF',
-    borderColor: '#E9D5FF',
+    backgroundColor: THEME.colors.primarySoft,
+    borderColor: '#DDD6FE',
   },
   storageActionIcon: {
     fontSize: 22,

@@ -1,40 +1,49 @@
 import React from 'react';
-import { StyleSheet, TextInput, View, TouchableOpacity, Text } from 'react-native';
-import { THEME } from '../constants/theme';
+import { StyleSheet, TextInput, View, TouchableOpacity } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
+import AppIcon from './AppIcon';
 
 export default function SearchBar({ value, onChangeText, onClear }) {
+  const { theme, isDark } = useTheme();
+
   return (
     <View style={styles.container}>
-      <View style={styles.inputWrapper}>
-        {/* Styled pure React Native search icon */}
+      <View
+        style={[
+          styles.inputWrapper,
+          {
+            backgroundColor: theme.colors.inputBackground,
+            borderColor: theme.colors.inputBorder,
+          },
+        ]}
+      >
         <View style={styles.searchIconContainer} accessibilityElementsHidden={true} importantForAccessibility="no">
-          <View style={styles.searchCircle} />
-          <View style={styles.searchHandle} />
+          <AppIcon name="search" size={15} color={theme.colors.textSecondary} />
         </View>
 
         <TextInput
-          style={styles.input}
-          placeholder="Search notes, tags or ideas..."
-          placeholderTextColor={THEME.colors.textMuted}
+          style={[styles.input, { color: theme.colors.inputText }]}
+          placeholder="Search notes, tags, or checklists..."
+          placeholderTextColor={theme.colors.inputPlaceholder}
           value={value}
           onChangeText={onChangeText}
           returnKeyType="search"
           autoCapitalize="none"
           autoCorrect={false}
           accessibilityLabel="Search notes"
-          accessibilityHint="Filters the notes list by title or content"
+          accessibilityHint="Filters notes list by keyword"
         />
 
         {value?.length > 0 && (
           <TouchableOpacity
             style={styles.clearButton}
             onPress={onClear}
-            accessibilityLabel="Clear search text"
+            accessibilityLabel="Clear search"
             accessibilityRole="button"
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <View style={styles.clearBadge}>
-              <Text style={styles.clearText}>✕</Text>
+            <View style={[styles.clearBadge, { backgroundColor: isDark ? '#3E4250' : '#C7C7CC' }]}>
+              <AppIcon name="close" size={9} color="#FFFFFF" />
             </View>
           </TouchableOpacity>
         )}
@@ -45,70 +54,42 @@ export default function SearchBar({ value, onChangeText, onClear }) {
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: THEME.spacing.lg,
-    paddingVertical: THEME.spacing.sm,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: THEME.colors.cardBackground,
-    borderRadius: THEME.borderRadius.lg,
-    borderWidth: 1.5,
-    borderColor: THEME.colors.border,
-    paddingHorizontal: THEME.spacing.md,
-    height: 48,
-    ...THEME.shadows.subtle,
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 11,
+    height: 38,
   },
   searchIconContainer: {
     width: 20,
     height: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: THEME.spacing.sm,
-    position: 'relative',
-  },
-  searchCircle: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: THEME.colors.primaryLight,
-    position: 'absolute',
-    top: 2,
-    left: 2,
-  },
-  searchHandle: {
-    width: 6,
-    height: 2,
-    backgroundColor: THEME.colors.primaryLight,
-    position: 'absolute',
-    bottom: 3,
-    right: 2,
-    transform: [{ rotate: '45deg' }],
-    borderRadius: 1,
+    marginRight: 8,
   },
   input: {
     flex: 1,
     fontSize: 14,
-    color: THEME.colors.textPrimary,
     paddingVertical: 0,
+    fontWeight: '400',
+    letterSpacing: -0.1,
   },
   clearButton: {
-    padding: 4,
+    padding: 3,
     alignItems: 'center',
     justifyContent: 'center',
   },
   clearBadge: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: THEME.colors.border,
+    width: 17,
+    height: 17,
+    borderRadius: 8.5,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  clearText: {
-    fontSize: 11,
-    color: THEME.colors.textSecondary,
-    fontWeight: '700',
   },
 });

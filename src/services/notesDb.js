@@ -1,28 +1,61 @@
 import * as SQLite from 'expo-sqlite';
 import {
+  reconcileScheduledRemindersAsync,
+  cancelNoteReminderAsync,
+} from './notificationService';
+import {
   isNativeModuleAvailable,
   createDatabaseBackupAsync,
   performSafeRepairAsync,
-  repairDatabaseAsync,
   syncNotesToOverlayAsync,
   getPendingOverlayMutationsAsync,
   clearPendingOverlayMutationsAsync,
   getPendingOverlayNotesAsync,
   clearPendingOverlayNotesAsync,
 } from '../../modules/floating-dot-overlay';
+import appConfig from '../../app.json';
+import {
+  BACKUP_FORMAT_VERSION,
+  createBackupPayload,
+  detectBackupFormat,
+  validateBackupPayload,
+} from '../utils/backupFormat';
 
 const DB_NAME = 'dotynotes.db';
 let dbInstance = null;
+let initPromise = null;
+let isInitialized = false;
+let openDbPromise = null;
 
 /**
- * Get or open the singleton SQLite database instance.
- * Exclusively owned by expo-sqlite (libexpo-sqlite.so).
+ * Open the underlying SQLite database file safely without concurrent handle races.
+ */
+async function openRawDatabaseAsync() {
+  if (dbInstance) return dbInstance;
+  if (openDbPromise) return openDbPromise;
+
+  openDbPromise = (async () => {
+    try {
+      const db = await SQLite.openDatabaseAsync(DB_NAME);
+      dbInstance = db;
+      return db;
+    } finally {
+      openDbPromise = null;
+    }
+  })();
+
+  return openDbPromise;
+}
+
+/**
+ * Get the initialized singleton SQLite database instance.
+ * Guarantees schema setup and migrations are completed before returning.
  */
 export async function getDatabase() {
-  if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync(DB_NAME);
+  if (isInitialized && dbInstance) {
+    return dbInstance;
   }
-  return dbInstance;
+  return initDatabase();
 }
 
 /**
@@ -30,11 +63,15 @@ export async function getDatabase() {
  * Safe to call when preparing to perform native file operations or reset.
  */
 export async function closeDatabaseAsync() {
+  isInitialized = false;
+  initPromise = null;
+  openDbPromise = null;
   if (dbInstance) {
-    try {
-      await dbInstance.closeAsync();
-    } catch (_) {}
+    const dbToClose = dbInstance;
     dbInstance = null;
+    try {
+      await dbToClose.closeAsync();
+    } catch (_) {}
   }
 }
 
@@ -47,8 +84,17 @@ export async function closeDatabaseAsync() {
  * database has been confirmed to open and respond correctly.
  */
 async function setupSchema(db) {
+  // Step 1: Ensure WAL mode is active
+  try {
+    await db.execAsync('PRAGMA journal_mode = WAL;');
+  } catch (pragmaErr) {
+    console.warn('[DotyNotes DB] PRAGMA journal_mode notice:', pragmaErr?.message);
+  }
+
+  // Step 2: Ensure core tables and base indexes exist.
+  // Note: Do NOT create idx_notes_reminder here because on existing databases
+  // the table already exists without the reminderAt column.
   await db.execAsync(`
-    PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS notes (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL,
@@ -58,7 +104,9 @@ async function setupSchema(db) {
       isPinned INTEGER NOT NULL DEFAULT 0,
       isArchived INTEGER NOT NULL DEFAULT 0,
       createdAt INTEGER NOT NULL,
-      updatedAt INTEGER NOT NULL
+      updatedAt INTEGER NOT NULL,
+      reminderAt INTEGER DEFAULT NULL,
+      notificationId TEXT DEFAULT NULL
     );
     CREATE TABLE IF NOT EXISTS app_metadata (
       key TEXT PRIMARY KEY NOT NULL,
@@ -68,6 +116,27 @@ async function setupSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes (isArchived);
     CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes (updatedAt DESC);
   `);
+
+  // Step 2: Backward-compatible migration for existing tables:
+  // Add missing reminderAt and notificationId columns BEFORE creating dependent indexes or executing queries
+  try {
+    const tableInfo = await db.getAllAsync('PRAGMA table_info(notes);');
+    const columnNames = new Set(tableInfo.map((col) => col.name));
+
+    if (!columnNames.has('reminderAt')) {
+      console.log('[DotyNotes DB] Migrating schema: adding reminderAt column...');
+      await db.execAsync('ALTER TABLE notes ADD COLUMN reminderAt INTEGER DEFAULT NULL;');
+    }
+    if (!columnNames.has('notificationId')) {
+      console.log('[DotyNotes DB] Migrating schema: adding notificationId column...');
+      await db.execAsync('ALTER TABLE notes ADD COLUMN notificationId TEXT DEFAULT NULL;');
+    }
+
+    // Step 3: Now that reminderAt is guaranteed to exist on both new and existing tables, create its index safely
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_notes_reminder ON notes (reminderAt);');
+  } catch (migErr) {
+    console.warn('[DotyNotes DB] Schema migration notice:', migErr.message);
+  }
 }
 
 /**
@@ -106,6 +175,12 @@ export async function flushPendingOverlayMutations(dbTarget) {
       console.log(`[DotyNotes DB] Processing ${mutations.deletions.length} pending deletion(s)...`);
       for (const id of mutations.deletions) {
         if (!id) continue;
+        try {
+          const row = await db.getFirstAsync('SELECT notificationId FROM notes WHERE id = ?;', [id]);
+          if (row?.notificationId) {
+            await cancelNoteReminderAsync(row.notificationId);
+          }
+        } catch (_) {}
         await db.runAsync(`DELETE FROM notes WHERE id = ?;`, [id]);
       }
       hasChanges = true;
@@ -116,9 +191,22 @@ export async function flushPendingOverlayMutations(dbTarget) {
       console.log(`[DotyNotes DB] Ingesting ${mutations.notes.length} pending note(s) from overlay...`);
       for (const note of mutations.notes) {
         if (!note.id) continue;
+        let reminderAt = note.reminderAt !== undefined ? note.reminderAt : null;
+        let notificationId = note.notificationId !== undefined ? note.notificationId : null;
+        try {
+          const existing = await db.getFirstAsync(
+            'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
+            [note.id]
+          );
+          if (existing) {
+            if (reminderAt === null && existing.reminderAt != null) reminderAt = existing.reminderAt;
+            if (notificationId === null && existing.notificationId != null) notificationId = existing.notificationId;
+          }
+        } catch (_) {}
+
         await db.runAsync(
-          `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             note.id,
             note.title || 'Quick Note',
@@ -129,6 +217,8 @@ export async function flushPendingOverlayMutations(dbTarget) {
             note.isArchived ? 1 : 0,
             Number(note.createdAt) || Date.now(),
             Number(note.updatedAt) || Date.now(),
+            reminderAt,
+            notificationId,
           ]
         );
       }
@@ -143,9 +233,22 @@ export async function flushPendingOverlayMutations(dbTarget) {
         if (Array.isArray(legacyNotes) && legacyNotes.length > 0) {
           for (const note of legacyNotes) {
             if (!note.id) continue;
+            let reminderAt = null;
+            let notificationId = null;
+            try {
+              const existing = await db.getFirstAsync(
+                'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
+                [note.id]
+              );
+              if (existing) {
+                reminderAt = existing.reminderAt;
+                notificationId = existing.notificationId;
+              }
+            } catch (_) {}
+
             await db.runAsync(
-              `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 note.id,
                 note.title || 'Quick Note',
@@ -156,6 +259,8 @@ export async function flushPendingOverlayMutations(dbTarget) {
                 note.isArchived ? 1 : 0,
                 Number(note.createdAt) || Date.now(),
                 Number(note.updatedAt) || Date.now(),
+                reminderAt,
+                notificationId,
               ]
             );
           }
@@ -201,109 +306,137 @@ export async function syncRecentNotesToOverlay(dbTarget) {
  * Initialize the database schema safely with automated data-preserving recovery.
  */
 export async function initDatabase() {
-  let db;
+  if (isInitialized && dbInstance) {
+    return dbInstance;
+  }
+  if (initPromise) {
+    return initPromise;
+  }
 
-  // ── Attempt 1: Normal open ────────────────────────────────────────────
-  try {
-    db = await getDatabase();
-    await setupSchema(db);
-  } catch (firstErr) {
-    console.warn('[DotyNotes DB] First open attempt failed:', firstErr.message);
-    await closeDatabaseAsync();
+  initPromise = (async () => {
+    let db;
 
-    const isMalformed = firstErr.message?.toLowerCase().includes('malformed') ||
-                        firstErr.message?.toLowerCase().includes('corrupt');
+    // ── Attempt 1: Normal open ────────────────────────────────────────────
+    try {
+      db = await openRawDatabaseAsync();
+      await setupSchema(db);
+    } catch (firstErr) {
+      console.warn('[DotyNotes DB] First open attempt failed:', firstErr?.message);
+      await closeDatabaseAsync();
 
-    if (isNativeModuleAvailable && isMalformed) {
-      console.log('[DotyNotes DB] Detected database corruption. Initiating safe data-recovery repair...');
-      const repairReport = await performSafeRepairAsync();
-      console.log('[DotyNotes DB] Recovery report:', JSON.stringify(repairReport));
+      const isMalformed = firstErr?.message?.toLowerCase().includes('malformed') ||
+                          firstErr?.message?.toLowerCase().includes('corrupt');
 
-      try {
-        db = await getDatabase();
-        await setupSchema(db);
+      if (isNativeModuleAvailable && isMalformed) {
+        console.log('[DotyNotes DB] Detected database corruption. Initiating safe data-recovery repair...');
+        const repairReport = await performSafeRepairAsync();
+        console.log('[DotyNotes DB] Recovery report:', JSON.stringify(repairReport));
 
-        // Restore harvested notes if present
-        if (repairReport.recoveredNotesJson) {
-          try {
-            const recovered = JSON.parse(repairReport.recoveredNotesJson);
-            if (Array.isArray(recovered) && recovered.length > 0) {
-              console.log(`[DotyNotes DB] Restoring ${recovered.length} recovered note(s)...`);
-              for (const note of recovered) {
-                if (!note.id) continue;
-                await db.runAsync(
-                  `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                  [
-                    note.id,
-                    note.title || 'Quick Note',
-                    note.content || '',
-                    note.colorSchemeId || 'purple',
-                    note.tag || 'General',
-                    note.isPinned ? 1 : 0,
-                    note.isArchived ? 1 : 0,
-                    Number(note.createdAt) || Date.now(),
-                    Number(note.updatedAt) || Date.now(),
-                  ]
-                );
+        try {
+          db = await openRawDatabaseAsync();
+          await setupSchema(db);
+
+          // Restore harvested notes if present
+          if (repairReport?.recoveredNotesJson) {
+            try {
+              const recovered = JSON.parse(repairReport.recoveredNotesJson);
+              if (Array.isArray(recovered) && recovered.length > 0) {
+                console.log(`[DotyNotes DB] Restoring ${recovered.length} recovered note(s)...`);
+                for (const note of recovered) {
+                  if (!note.id) continue;
+                  await db.runAsync(
+                    `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      note.id,
+                      note.title || 'Quick Note',
+                      note.content || '',
+                      note.colorSchemeId || 'purple',
+                      note.tag || 'General',
+                      note.isPinned ? 1 : 0,
+                      note.isArchived ? 1 : 0,
+                      Number(note.createdAt) || Date.now(),
+                      Number(note.updatedAt) || Date.now(),
+                    ]
+                  );
+                }
+                console.log('[DotyNotes DB] All recovered notes successfully restored to database');
               }
-              console.log('[DotyNotes DB] All recovered notes successfully restored to database');
+            } catch (jsonErr) {
+              console.warn('[DotyNotes DB] Failed parsing recovered notes JSON:', jsonErr?.message);
             }
-          } catch (jsonErr) {
-            console.warn('[DotyNotes DB] Failed parsing recovered notes JSON:', jsonErr.message);
           }
+        } catch (postRepairErr) {
+          console.error('[DotyNotes DB] Failed reopening database after repair:', postRepairErr?.message);
+          isInitialized = false;
+          dbInstance = null;
+          throw postRepairErr;
         }
-      } catch (postRepairErr) {
-        console.error('[DotyNotes DB] Failed reopening database after repair:', postRepairErr.message);
-        throw postRepairErr;
-      }
-    } else {
-      // Retry once after connection reset
-      try {
-        console.log('[DotyNotes DB] Retrying database open after connection reset...');
-        db = await getDatabase();
-        await setupSchema(db);
-      } catch (retryErr) {
-        await closeDatabaseAsync();
-        let backupLocation = null;
-        if (isNativeModuleAvailable) {
-          try {
-            backupLocation = await createDatabaseBackupAsync();
-          } catch (_) {}
+      } else {
+        // Retry once after connection reset
+        try {
+          console.log('[DotyNotes DB] Retrying database open after connection reset...');
+          db = await openRawDatabaseAsync();
+          await setupSchema(db);
+        } catch (retryErr) {
+          await closeDatabaseAsync();
+          let backupLocation = null;
+          if (isNativeModuleAvailable) {
+            try {
+              backupLocation = await createDatabaseBackupAsync();
+            } catch (_) {}
+          }
+          const recoveryError = new Error(
+            'SQLite database cannot be opened. Original files are preserved.\n' +
+            'Error: ' + (retryErr?.message || 'Database initialization failed.')
+          );
+          recoveryError.code = 'DB_NEEDS_REPAIR';
+          recoveryError.backupLocation = backupLocation;
+          isInitialized = false;
+          dbInstance = null;
+          throw recoveryError;
         }
-        const recoveryError = new Error(
-          'SQLite database cannot be opened. Original files are preserved.\n' +
-          'Error: ' + retryErr.message
-        );
-        recoveryError.code = 'DB_NEEDS_REPAIR';
-        recoveryError.backupLocation = backupLocation;
-        throw recoveryError;
       }
     }
-  }
 
-  // Ingest any notes / deletions captured in the floating overlay
-  await flushPendingOverlayMutations(db);
+    // Ingest any notes / deletions captured in the floating overlay
+    await flushPendingOverlayMutations(db);
 
-  // Seed welcome notes ONLY on a fresh installation, NEVER over recoverable user data
-  const metaRow = await db.getFirstAsync("SELECT value FROM app_metadata WHERE key = 'has_seeded_initial_notes';");
-  if (!metaRow) {
-    const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
-    if (countRow && countRow.count === 0) {
-      await seedInitialNotes(db);
-    } else {
-      // Notes already exist; mark seeded so it never triggers
-      await db.runAsync("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');");
+    // Seed welcome notes ONLY on a fresh installation, NEVER over recoverable user data
+    try {
+      const metaRow = await db.getFirstAsync("SELECT value FROM app_metadata WHERE key = 'has_seeded_initial_notes';");
+      if (!metaRow) {
+        const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM notes;');
+        if (countRow && countRow.count === 0) {
+          await seedInitialNotes(db);
+        } else {
+          // Notes already exist; mark seeded so it never triggers
+          await db.runAsync("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');");
+        }
+      }
+    } catch (seedErr) {
+      console.warn('[DotyNotes DB] Welcome seed check warning:', seedErr?.message);
     }
+
+    // Update overlay cache with latest notes
+    await syncRecentNotesToOverlay(db);
+
+    // Run integrity check asynchronously after startup — never in the hot path
+    setTimeout(() => runIntegrityCheckAsync(db), 0);
+
+    // Reconcile scheduled reminder notifications with OS asynchronously without blocking startup
+    setTimeout(() => reconcileScheduledRemindersAsync(db), 100);
+
+    isInitialized = true;
+    dbInstance = db;
+    return db;
+  })();
+
+  try {
+    return await initPromise;
+  } finally {
+    initPromise = null;
   }
-
-  // Update overlay cache with latest notes
-  await syncRecentNotesToOverlay(db);
-
-  // Run integrity check asynchronously after startup — never in the hot path
-  setTimeout(() => runIntegrityCheckAsync(db), 0);
-
-  return db;
 }
 
 /**
@@ -377,35 +510,46 @@ export async function getAllNotesAsync() {
  * Create a new note and persist it to SQLite.
  */
 export async function createNoteAsync({
+  id,
   title,
   content,
   colorSchemeId = 'purple',
   tag = 'General',
   isPinned = false,
   isArchived = false,
-}) {
+  reminderAt = null,
+  notificationId = null,
+} = {}) {
   const db = await getDatabase();
-  const id = `note_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const noteId = id || `note_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = Date.now();
 
+  const safeTitle = (typeof title === 'string' ? title.trim() : String(title || '')).trim() || 'Untitled Note';
+  const safeContent = typeof content === 'string' ? content.trim() : String(content || '');
+  const safeTag = (typeof tag === 'string' ? tag.trim() : String(tag || '')).trim() || 'General';
+  const safeReminderAt = reminderAt != null && !isNaN(Number(reminderAt)) ? Number(reminderAt) : null;
+  const safeNotificationId = notificationId ? String(notificationId) : null;
+
   await db.runAsync(
-    `INSERT INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      id,
-      title.trim() || 'Untitled Note',
-      content.trim() || '',
-      colorSchemeId,
-      tag.trim() || 'General',
+      noteId,
+      safeTitle,
+      safeContent,
+      colorSchemeId || 'purple',
+      safeTag,
       isPinned ? 1 : 0,
       isArchived ? 1 : 0,
       now,
       now,
+      safeReminderAt,
+      safeNotificationId,
     ]
   );
 
   await syncRecentNotesToOverlay(db);
-  return getNoteByIdAsync(id);
+  return getNoteByIdAsync(noteId);
 }
 
 /**
@@ -422,30 +566,74 @@ export async function getNoteByIdAsync(id) {
 
 /**
  * Update an existing note in SQLite.
+ * Safely merges partial updates with current note values to prevent undefined errors.
  */
-export async function updateNoteAsync(id, {
-  title,
-  content,
-  colorSchemeId,
-  tag,
-  isPinned,
-  isArchived,
-}) {
+export async function updateNoteAsync(id, fields = {}) {
   const db = await getDatabase();
+  const currentNote = await getNoteByIdAsync(id);
+  if (!currentNote) {
+    throw new Error(`Note not found: ${id}`);
+  }
+
+  const {
+    title,
+    content,
+    colorSchemeId,
+    tag,
+    isPinned,
+    isArchived,
+    reminderAt,
+    notificationId,
+  } = fields;
+
   const now = Date.now();
+
+  const finalTitle = title !== undefined
+    ? ((typeof title === 'string' ? title.trim() : String(title || '')).trim() || 'Untitled Note')
+    : currentNote.title;
+
+  const finalContent = content !== undefined
+    ? (typeof content === 'string' ? content.trim() : String(content || ''))
+    : (currentNote.content || '');
+
+  const finalColorSchemeId = colorSchemeId !== undefined
+    ? (colorSchemeId || 'purple')
+    : (currentNote.colorSchemeId || 'purple');
+
+  const finalTag = tag !== undefined
+    ? ((typeof tag === 'string' ? tag.trim() : String(tag || '')).trim() || 'General')
+    : (currentNote.tag || 'General');
+
+  const finalIsPinned = isPinned !== undefined
+    ? (isPinned ? 1 : 0)
+    : (currentNote.isPinned ? 1 : 0);
+
+  const finalIsArchived = isArchived !== undefined
+    ? (isArchived ? 1 : 0)
+    : (currentNote.isArchived ? 1 : 0);
+
+  const finalReminderAt = reminderAt !== undefined
+    ? (reminderAt != null && !isNaN(Number(reminderAt)) ? Number(reminderAt) : null)
+    : (currentNote.reminderAt != null ? Number(currentNote.reminderAt) : null);
+
+  const finalNotificationId = notificationId !== undefined
+    ? (notificationId ? String(notificationId) : null)
+    : (currentNote.notificationId || null);
 
   await db.runAsync(
     `UPDATE notes
-     SET title = ?, content = ?, colorSchemeId = ?, tag = ?, isPinned = ?, isArchived = ?, updatedAt = ?
+     SET title = ?, content = ?, colorSchemeId = ?, tag = ?, isPinned = ?, isArchived = ?, updatedAt = ?, reminderAt = ?, notificationId = ?
      WHERE id = ?;`,
     [
-      title.trim() || 'Untitled Note',
-      content.trim() || '',
-      colorSchemeId || 'purple',
-      tag.trim() || 'General',
-      isPinned ? 1 : 0,
-      isArchived ? 1 : 0,
+      finalTitle,
+      finalContent,
+      finalColorSchemeId,
+      finalTag,
+      finalIsPinned,
+      finalIsArchived,
       now,
+      finalReminderAt,
+      finalNotificationId,
       id,
     ]
   );
@@ -493,6 +681,12 @@ export async function toggleArchiveNoteAsync(id, currentArchived) {
  */
 export async function deleteNoteAsync(id) {
   const db = await getDatabase();
+  const note = await getNoteByIdAsync(id);
+  if (note?.notificationId) {
+    try {
+      await cancelNoteReminderAsync(note.notificationId);
+    } catch (_) {}
+  }
   await db.runAsync(
     `DELETE FROM notes WHERE id = ?;`,
     [id]
@@ -517,6 +711,8 @@ function formatNoteRow(row) {
     createdAt: Number(row.createdAt) || Date.now(),
     updatedAt: updatedAt,
     dateLabel: formatNoteDate(updatedAt),
+    reminderAt: row.reminderAt != null ? Number(row.reminderAt) : null,
+    notificationId: row.notificationId || null,
   };
 }
 
@@ -552,64 +748,191 @@ export function formatNoteDate(timestamp) {
 }
 
 /**
- * Exports all user notes as a structured, versioned JSON payload.
- * Useful for local backups, sharing, and disaster recovery.
+ * Exports all user notes and supported preferences as a structured, versioned JSON payload.
+ * Inspired by Flick, compatible with standard JSON parsers and future format migrations.
  */
 export async function exportAllNotesToJsonAsync() {
   const db = await getDatabase();
   const allNotes = await db.getAllAsync('SELECT * FROM notes ORDER BY createdAt ASC;');
-  const exportPayload = {
-    version: 1,
-    appName: 'DotyNotes',
-    storageEngine: 'expo-sqlite (WAL)',
-    exportedAt: Date.now(),
-    totalNotes: allNotes.length,
-    notes: allNotes.map(formatNoteRow),
-  };
-  return JSON.stringify(exportPayload, null, 2);
+
+  // Fetch supported preferences from app_metadata
+  const defaultNoteColor = await getSettingAsync('default_note_color', 'purple');
+  const defaultReminderTime = await getSettingAsync('default_reminder_time', '09:00 AM');
+  const hapticSetting = await getSettingAsync('haptic_feedback_enabled', '1');
+
+  const payload = createBackupPayload({
+    notes: allNotes,
+    settings: {
+      default_note_color: defaultNoteColor,
+      default_reminder_time: defaultReminderTime,
+      haptic_feedback_enabled: hapticSetting !== '0',
+    },
+    appName: appConfig?.expo?.name || 'DotyNotes',
+    appVersion: appConfig?.expo?.version || '1.0.0',
+    createdAt: Date.now(),
+  });
+
+  return JSON.stringify(payload, null, 2);
 }
 
 /**
- * Restores notes from a JSON backup payload.
- * Preserves all note IDs, timestamps, colors, tags, and pin/archive states.
+ * Safely restores notes and supported preferences from a validated JSON backup payload or string.
+ * Supports both the new versioned format (v1) and legacy DotyNotes backups.
+ * Preserves all note IDs, timestamps, colors, tags, content, and pin/archive status.
+ * Reconciles scheduled reminders with the device OS without duplicate scheduling.
+ * Never deletes or resets the SQLite database.
  */
 export async function importNotesFromJsonAsync(jsonStringOrObject) {
-  const payload = typeof jsonStringOrObject === 'string'
-    ? JSON.parse(jsonStringOrObject)
-    : jsonStringOrObject;
-
-  if (!payload || !Array.isArray(payload.notes)) {
-    throw new Error('Invalid backup file format: missing notes array');
+  const validation = validateBackupPayload(jsonStringOrObject);
+  if (!validation.isValid) {
+    throw new Error(validation.error || 'Invalid backup payload');
   }
 
+  const { validNotes, validSettings, formatType } = validation;
   const db = await getDatabase();
-  let importedCount = 0;
 
-  for (const note of payload.notes) {
-    if (!note.id || !note.title) continue;
+  let importedCount = 0;
+  let updatedCount = 0;
+  let newCount = 0;
+
+  // Use transaction if supported by environment for atomic restoration
+  const executeRestore = async () => {
+    for (const note of validNotes) {
+      // Check if note already exists
+      const existing = await db.getFirstAsync(
+        'SELECT id, reminderAt, notificationId FROM notes WHERE id = ?;',
+        [note.id]
+      );
+
+      let notificationIdToSave = null;
+
+      if (existing) {
+        updatedCount++;
+        // If reminder has NOT changed and there is an existing live notificationId, keep it
+        if (existing.reminderAt === note.reminderAt && existing.notificationId) {
+          notificationIdToSave = existing.notificationId;
+        } else if (existing.notificationId) {
+          // Reminder changed, cancel old notification so reconciler can schedule fresh one
+          try {
+            await cancelNoteReminderAsync(existing.notificationId);
+          } catch (_) {}
+        }
+      } else {
+        newCount++;
+      }
+
+      await db.runAsync(
+        `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          note.id,
+          note.title,
+          note.content,
+          note.colorSchemeId,
+          note.tag,
+          note.isPinned,
+          note.isArchived,
+          note.createdAt,
+          note.updatedAt,
+          note.reminderAt,
+          notificationIdToSave,
+        ]
+      );
+      importedCount++;
+    }
+
+    // Restore supported preferences if present in backup
+    let settingsRestoredCount = 0;
+    if (validSettings.default_note_color) {
+      await setSettingAsync('default_note_color', validSettings.default_note_color);
+      settingsRestoredCount++;
+    }
+    if (validSettings.default_reminder_time) {
+      await setSettingAsync('default_reminder_time', validSettings.default_reminder_time);
+      settingsRestoredCount++;
+    }
+    if (validSettings.haptic_feedback_enabled !== undefined) {
+      await setSettingAsync(
+        'haptic_feedback_enabled',
+        validSettings.haptic_feedback_enabled ? '1' : '0'
+      );
+      settingsRestoredCount++;
+    }
+
+    // Ensure metadata marks database as active
     await db.runAsync(
-      `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        note.id,
-        note.title,
-        note.content || '',
-        note.colorSchemeId || 'purple',
-        note.tag || 'General',
-        note.isPinned ? 1 : 0,
-        note.isArchived ? 1 : 0,
-        Number(note.createdAt) || Date.now(),
-        Number(note.updatedAt) || Date.now(),
-      ]
+      `INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');`
     );
-    importedCount++;
+
+    return settingsRestoredCount;
+  };
+
+  let settingsRestoredCount = 0;
+  if (typeof db.withTransactionAsync === 'function') {
+    settingsRestoredCount = await db.withTransactionAsync(executeRestore);
+  } else {
+    settingsRestoredCount = await executeRestore();
   }
 
-  // Ensure metadata marks database as active
-  await db.runAsync(
-    `INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('has_seeded_initial_notes', '1');`
-  );
-
+  // Sync latest notes to floating overlay cache
   await syncRecentNotesToOverlay(db);
-  return { success: true, importedCount };
+
+  // Reconcile future scheduled reminders with OS so live alarms are created safely
+  try {
+    await reconcileScheduledRemindersAsync(db);
+  } catch (recErr) {
+    console.warn('[DotyNotes DB] Reminder reconciliation during restore notice:', recErr?.message);
+  }
+
+  return {
+    success: true,
+    importedCount,
+    updatedCount,
+    newCount,
+    totalValid: validNotes.length,
+    settingsRestoredCount,
+    formatType,
+  };
+}
+
+export {
+  validateBackupPayload,
+  detectBackupFormat,
+  createBackupPayload,
+  BACKUP_FORMAT_VERSION,
+};
+
+
+/**
+ * Read a persistent setting from the app_metadata table.
+ */
+export async function getSettingAsync(key, defaultValue = null) {
+  try {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync(
+      'SELECT value FROM app_metadata WHERE key = ?;',
+      [key]
+    );
+    return row && row.value != null ? row.value : defaultValue;
+  } catch (err) {
+    console.error('getSettingAsync error:', err);
+    return defaultValue;
+  }
+}
+
+/**
+ * Persist a setting to the app_metadata table.
+ */
+export async function setSettingAsync(key, value) {
+  try {
+    const db = await getDatabase();
+    await db.runAsync(
+      'INSERT OR REPLACE INTO app_metadata (key, value) VALUES (?, ?);',
+      [key, String(value)]
+    );
+    return true;
+  } catch (err) {
+    console.error('setSettingAsync error:', err);
+    return false;
+  }
 }

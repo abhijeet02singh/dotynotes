@@ -6,10 +6,29 @@ import { THEME } from '../constants/theme';
 export default function NotesGrid({ notes = [], onNotePress }) {
   const { width } = useWindowDimensions();
 
-  // Calculate dynamic card width for responsive two-column layout
   const horizontalPadding = THEME.spacing.lg * 2;
   const gap = THEME.spacing.md;
-  const cardWidth = Math.floor((width - horizontalPadding - gap) / 2);
+
+  // On narrow screens (< 340px), collapse to 1 column to prevent overflow
+  const isNarrow = width < 340;
+  const cardWidth = isNarrow
+    ? Math.max(260, width - horizontalPadding)
+    : Math.floor((width - horizontalPadding - gap) / 2);
+
+  if (isNarrow) {
+    return (
+      <View style={styles.singleColumnContainer}>
+        {notes.map((note) => (
+          <NoteCard
+            key={note.id}
+            note={note}
+            width={cardWidth}
+            onPress={onNotePress}
+          />
+        ))}
+      </View>
+    );
+  }
 
   // Distribute notes into two columns for natural staggered grid
   const leftColumn = notes.filter((_, index) => index % 2 === 0);
@@ -48,7 +67,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: THEME.spacing.lg,
     paddingTop: THEME.spacing.sm,
-    paddingBottom: 80, // Space for FAB
+    paddingBottom: 90, // Space for FAB
+  },
+  singleColumnContainer: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    paddingHorizontal: THEME.spacing.lg,
+    paddingTop: THEME.spacing.sm,
+    paddingBottom: 90,
   },
   column: {
     flexDirection: 'column',

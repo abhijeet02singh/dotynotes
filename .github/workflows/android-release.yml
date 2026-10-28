@@ -1,0 +1,251 @@
+name: Android Release
+
+'on':
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to build (must match app.json, e.g. 1.0.0 or v1.0.0)'
+        required: true
+        default: '1.0.0'
+
+concurrency:
+  group: android-release-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Pre-Release Verification & Quality Gate
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Resolve and Validate Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_INPUT="${{ github.event.inputs.version }}"
+          else
+            RAW_INPUT="${{ github.ref_name }}"
+          fi
+
+          CLEAN_VERSION="${RAW_INPUT#v}"
+
+          echo "Target Version: ${CLEAN_VERSION}"
+          echo "Target Tag: v${CLEAN_VERSION}"
+
+          if ! [[ "${CLEAN_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid semver format: '${CLEAN_VERSION}'. Must follow stable X.Y.Z format (e.g. 1.0.0). Prerelease versions are not supported."
+            exit 1
+          fi
+
+          APP_JSON_VERSION=$(node -e "console.log(require('./app.json').expo.version || '')")
+          PKG_JSON_VERSION=$(node -e "console.log(require('./package.json').version || '')")
+          PACKAGE_ID=$(node -e "console.log(require('./app.json').expo.android?.package || '')")
+          APP_VERSION_CODE=$(node -e "const vc = require('./app.json').expo.android?.versionCode; console.log(vc !== undefined ? vc : 1)")
+          EAS_BUILD_TYPE=$(node -e "console.log(require('./eas.json').build?.['release-apk']?.android?.buildType || '')")
+
+          echo "app.json version: ${APP_JSON_VERSION}"
+          echo "package.json version: ${PKG_JSON_VERSION}"
+          echo "Android package ID: ${PACKAGE_ID}"
+          echo "Android versionCode: ${APP_VERSION_CODE}"
+          echo "EAS release-apk buildType: ${EAS_BUILD_TYPE}"
+
+          if [ "${CLEAN_VERSION}" != "${APP_JSON_VERSION}" ]; then
+            echo "::error::Version mismatch: Target release version '${CLEAN_VERSION}' does not match app.json version '${APP_JSON_VERSION}'."
+            exit 1
+          fi
+
+          if [ "${CLEAN_VERSION}" != "${PKG_JSON_VERSION}" ]; then
+            echo "::error::Version mismatch: Target release version '${CLEAN_VERSION}' does not match package.json version '${PKG_JSON_VERSION}'."
+            exit 1
+          fi
+
+          if [ "${PACKAGE_ID}" != "com.dotynotes.app" ]; then
+            echo "::error::Package ID mismatch: Expected 'com.dotynotes.app', found '${PACKAGE_ID}'."
+            exit 1
+          fi
+
+          if ! [[ "${APP_VERSION_CODE}" =~ ^[0-9]+$ ]] || [ "${APP_VERSION_CODE}" -le 0 ]; then
+            echo "::error::Invalid Android versionCode: '${APP_VERSION_CODE}'. Must be a positive integer."
+            exit 1
+          fi
+
+          if [ "${EAS_BUILD_TYPE}" != "apk" ]; then
+            echo "::error::EAS build profile 'release-apk' does not specify android.buildType = 'apk'."
+            exit 1
+          fi
+
+          echo "version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+          echo "version_code=${APP_VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "tag_name=v${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Check for Duplicate GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          echo "Checking if release '${TAG_NAME}' already exists..."
+          RELEASE_CHECK=$(gh release view "${TAG_NAME}" --repo "${{ github.repository }}" --json tagName -q .tagName 2>/dev/null || true)
+          if [ -n "${RELEASE_CHECK}" ]; then
+            echo "::error::Release for tag '${TAG_NAME}' already exists on GitHub. Overwriting releases is prohibited."
+            exit 1
+          fi
+          echo "Release check passed: '${TAG_NAME}' is available for publication."
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Expo Doctor diagnostics
+        run: npx expo-doctor
+
+      - name: Lint Android codebase
+        run: npm run lint
+
+  build-and-release:
+    name: EAS Build & GitHub Release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Set up EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build Android APK with EAS
+        id: eas-build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::Secret EXPO_TOKEN is missing or empty. Please configure it in repository secrets."
+            exit 1
+          fi
+
+          echo "Starting non-interactive EAS build for profile 'release-apk'..."
+          eas build --platform android --profile release-apk --non-interactive --json --wait > eas_build_raw.json
+
+          BUILD_STATUS=$(node -e "const d=require('./eas_build_raw.json'); console.log(Array.isArray(d) ? d[0]?.status : d?.status)")
+          BUILD_ID=$(node -e "const d=require('./eas_build_raw.json'); console.log(Array.isArray(d) ? d[0]?.id : d?.id)")
+          ARTIFACT_URL=$(node -e "const d=require('./eas_build_raw.json'); const b=Array.isArray(d)?d[0]:d; console.log(b?.artifacts?.applicationArchiveUrl || b?.artifacts?.buildUrl || '')")
+
+          echo "EAS Build ID: ${BUILD_ID}"
+          echo "EAS Build Status: ${BUILD_STATUS}"
+
+          if [ "${BUILD_STATUS}" != "finished" ]; then
+            echo "::error::EAS build did not finish successfully. Status: '${BUILD_STATUS}'."
+            exit 1
+          fi
+
+          if [ -z "${ARTIFACT_URL}" ]; then
+            echo "::error::No completed artifact URL was returned by EAS Build."
+            exit 1
+          fi
+
+          echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "artifact_url=${ARTIFACT_URL}" >> $GITHUB_OUTPUT
+
+      - name: Download & Verify APK Artifact
+        id: artifact
+        env:
+          ARTIFACT_URL: ${{ steps.eas-build.outputs.artifact_url }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+        run: |
+          APK_NAME="DotyNotes-v${RELEASE_VERSION}.apk"
+          echo "Downloading APK to ${APK_NAME}..."
+
+          curl -fSL -H "User-Agent: Mozilla/5.0" "${ARTIFACT_URL}" -o "${APK_NAME}"
+
+          if [ ! -s "${APK_NAME}" ]; then
+            echo "::error::Downloaded APK is missing or empty."
+            exit 1
+          fi
+
+          SHA256_HASH=$(sha256sum "${APK_NAME}" | awk '{print $1}')
+          FILE_SIZE_BYTES=$(wc -c < "${APK_NAME}" | tr -d ' ')
+          FILE_SIZE_MB=$(node -e "console.log((${FILE_SIZE_BYTES} / (1024*1024)).toFixed(2))")
+
+          echo "${SHA256_HASH}  ${APK_NAME}" > "${APK_NAME}.sha256"
+
+          echo "Artifact Name: ${APK_NAME}"
+          echo "File Size: ${FILE_SIZE_BYTES} bytes (${FILE_SIZE_MB} MB)"
+          echo "SHA-256: ${SHA256_HASH}"
+
+          echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256_HASH}" >> $GITHUB_OUTPUT
+          echo "size_bytes=${FILE_SIZE_BYTES}" >> $GITHUB_OUTPUT
+          echo "size_mb=${FILE_SIZE_MB}" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          ## DotyNotes v${{ needs.validate.outputs.release_version }} — Official Android Release
+
+          Fast, offline-first Android note-taking application featuring colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.
+
+          ### Verified Package Details
+          - **Package Identifier:** `com.dotynotes.app`
+          - **Version:** `${{ needs.validate.outputs.release_version }}`
+          - **Version Code:** `${{ needs.validate.outputs.version_code }}`
+          - **File Name:** `${{ steps.artifact.outputs.apk_name }}`
+          - **File Size:** `${{ steps.artifact.outputs.size_mb }} MB` (${{ steps.artifact.outputs.size_bytes }} bytes)
+          - **Compatibility:** Android 8.0 (API 26) or higher
+          - **EAS Build ID:** `${{ steps.eas-build.outputs.build_id }}`
+
+          ### Cryptographic Checksum
+          ```
+          SHA-256: ${{ steps.artifact.outputs.sha256 }}
+          ```
+
+          ### Installation Instructions
+          1. Download the `.apk` package to your Android device.
+          2. When prompted by Android, permit *"Install unknown apps"* for your browser or files manager.
+          3. Launch DotyNotes and grant the *"Appear on top"* permission when prompted to activate the Floating Dot overlay.
+          EOF
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag_name }}
+          name: DotyNotes v${{ needs.validate.outputs.release_version }}
+          body_path: release_notes.md
+          files: |
+            ${{ steps.artifact.outputs.apk_name }}
+            ${{ steps.artifact.outputs.apk_name }}.sha256
+          draft: false
+          prerelease: false
+          make_latest: true

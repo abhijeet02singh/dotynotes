@@ -11,17 +11,18 @@
     },
     "android": {
       "package": "com.dotynotes.app",
+      "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "permissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM"
       ]
     },
     "web": {
@@ -29,12 +30,20 @@
     },
     "plugins": [
       "expo-status-bar",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#8B5CF6"
+        }
+      ]
     ],
     "extra": {
       "eas": {
-        "projectId": "91b59ea6-6c96-4d80-885a-6cbd80c8d620"
+        "projectId": "5241810f-4a44-48fe-b8e2-dfe68177a475"
       }
-    }
+    },
+    "owner": "abhijeet_singhk02"
   }
 }

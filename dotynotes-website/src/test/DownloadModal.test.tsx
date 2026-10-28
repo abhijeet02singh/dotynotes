@@ -13,39 +13,51 @@ describe('DownloadModal Component', () => {
     expect(screen.queryByText(/download dotynotes for android/i)).not.toBeInTheDocument();
   });
 
-  it('renders modal dialog and verified project metadata when isOpen is true', () => {
+  it('renders modal dialog with confirmation headline, prompt, and verified metadata when isOpen is true', () => {
     render(<DownloadModal isOpen={true} onClose={vi.fn()} />);
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText(/download dotynotes for android/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /download dotynotes for android/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/do you want to download dotynotes apk for your android device\?/i)
+    ).toBeInTheDocument();
     expect(screen.getByText(APP_CONFIG.release.packageId)).toBeInTheDocument();
-    expect(screen.getByText(new RegExp(`version ${APP_CONFIG.release.version}`, 'i'))).toBeInTheDocument();
+    expect(screen.getByText(APP_CONFIG.release.version)).toBeInTheDocument();
+    expect(screen.getByText('Android APK')).toBeInTheDocument();
+    expect(screen.getByText(APP_CONFIG.release.fileSizeFormatted)).toBeInTheDocument();
   });
 
-  it('displays release preparation state and github link when APK release is unavailable', () => {
-    render(<DownloadModal isOpen={true} onClose={vi.fn()} />);
+  it('displays preparation status, disabled Download APK button, and functional Cancel button when release is unavailable', () => {
+    const handleClose = vi.fn();
+    render(<DownloadModal isOpen={true} onClose={handleClose} />);
 
-    // Shows clear Release in Preparation notice
+    // Shows Release in Preparation notice
     expect(screen.getByText(/release in preparation/i)).toBeInTheDocument();
+    expect(screen.getByText(/signed standalone apk build has been generated/i)).toBeInTheDocument();
 
-    // Does not render active direct APK download link
-    expect(
-      screen.queryByRole('link', {
-        name: new RegExp(`download apk \\(${APP_CONFIG.release.apkFileName}\\)`, 'i'),
-      })
-    ).not.toBeInTheDocument();
+    // Primary Download APK button is disabled
+    const downloadBtn = screen.getByRole('button', { name: /download apk/i });
+    expect(downloadBtn).toBeInTheDocument();
+    expect(downloadBtn).toBeDisabled();
+    expect(downloadBtn).toHaveAttribute('aria-disabled', 'true');
 
-    // Shows safe repository link instead
-    const repoLink = screen.getByRole('link', { name: /view repository on github/i });
-    expect(repoLink).toBeInTheDocument();
-    expect(repoLink).toHaveAttribute('href', APP_CONFIG.release.githubUrl);
+    // Does NOT navigate to GitHub repository as primary action
+    expect(screen.queryByRole('link', { name: /view repository on github/i })).not.toBeInTheDocument();
+
+    // Cancel button is active and functional
+    const cancelBtn = screen.getByRole('button', { name: /^cancel$/i });
+    expect(cancelBtn).toBeInTheDocument();
+    expect(cancelBtn).not.toBeDisabled();
+
+    fireEvent.click(cancelBtn);
+    expect(handleClose).toHaveBeenCalledTimes(1);
 
     // Shows checksum publication notice instead of copy button
     expect(screen.getByText(/available upon official build publication/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /copy sha-256 checksum/i })).not.toBeInTheDocument();
   });
 
-  it('displays verified download link and copyable checksum when release is available', () => {
+  it('displays enabled Download APK link and copyable checksum when release is available', async () => {
     const originalRelease = { ...APP_CONFIG.release };
     // Temporarily mock an active verified release
     Object.assign(APP_CONFIG.release, {
@@ -61,19 +73,31 @@ describe('DownloadModal Component', () => {
       },
     });
 
-    try {
-      render(<DownloadModal isOpen={true} onClose={vi.fn()} />);
+    const handleClose = vi.fn();
 
-      const downloadLink = screen.getByRole('link', {
-        name: new RegExp(`download apk \\(${APP_CONFIG.release.apkFileName}\\)`, 'i'),
-      });
+    try {
+      render(<DownloadModal isOpen={true} onClose={handleClose} />);
+
+      // Primary button is an active download link
+      const downloadLink = screen.getByRole('link', { name: /download apk/i });
       expect(downloadLink).toBeInTheDocument();
       expect(downloadLink).toHaveAttribute('href', 'https://releases.dotynotes.app/v1.0.0/DotyNotes-v1.0.0.apk');
+      expect(downloadLink).toHaveAttribute('download', APP_CONFIG.release.apkFileName);
 
+      // Cancel button remains present
+      expect(screen.getByRole('button', { name: /^cancel$/i })).toBeInTheDocument();
+
+      // Checksum display and copy functionality
       expect(screen.getByText('abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890')).toBeInTheDocument();
       const copyBtn = screen.getByRole('button', { name: /copy sha-256 checksum/i });
       fireEvent.click(copyBtn);
       expect(writeTextMock).toHaveBeenCalledWith('abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890');
+
+      // Clicking download link triggers onClose after short delay
+      fireEvent.click(downloadLink);
+      await waitFor(() => {
+        expect(handleClose).toHaveBeenCalled();
+      });
     } finally {
       Object.assign(APP_CONFIG.release, originalRelease);
     }
@@ -83,7 +107,7 @@ describe('DownloadModal Component', () => {
     const handleClose = vi.fn();
     render(<DownloadModal isOpen={true} onClose={handleClose} />);
 
-    // Close via close button
+    // Close via header close button
     const closeBtn = screen.getByRole('button', { name: /close dialog/i });
     fireEvent.click(closeBtn);
     expect(handleClose).toHaveBeenCalledTimes(1);

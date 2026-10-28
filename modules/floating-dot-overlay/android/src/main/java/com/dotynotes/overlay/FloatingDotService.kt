@@ -7,10 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -29,6 +32,8 @@ class FloatingDotService : Service() {
     companion object {
         const val ACTION_START = "com.dotynotes.overlay.ACTION_START"
         const val ACTION_STOP = "com.dotynotes.overlay.ACTION_STOP"
+        const val ACTION_UPDATE_THEME = "com.dotynotes.overlay.ACTION_UPDATE_THEME"
+        const val EXTRA_THEME = "extra_theme"
         const val NOTIFICATION_CHANNEL_ID = "dotynotes_floating_channel"
         const val NOTIFICATION_ID = 4040
 
@@ -36,11 +41,19 @@ class FloatingDotService : Service() {
             private set
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var windowManager: WindowManager
     private lateinit var repository: OverlayNoteRepository
     private var floatingDotView: FloatingDotView? = null
     private var quickNotesView: QuickNotesOverlayView? = null
     private var isPanelOpen = false
+
+    private val serviceThemeListener: () -> Unit = {
+        mainHandler.post {
+            floatingDotView?.updateThemePaints()
+        }
+        Unit
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +61,7 @@ class FloatingDotService : Service() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         repository = OverlayNoteRepository.getInstance(this)
+        repository.addThemeUpdatedListener(serviceThemeListener)
         createNotificationChannel()
     }
 
@@ -55,6 +69,17 @@ class FloatingDotService : Service() {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_UPDATE_THEME) {
+            val themeStr = intent.getStringExtra(EXTRA_THEME)
+            if (!themeStr.isNullOrBlank()) {
+                repository.setOverlayTheme(themeStr)
+            }
+            mainHandler.post {
+                floatingDotView?.updateThemePaints()
+            }
+            return START_STICKY
         }
 
         // Verify overlay permission before starting
@@ -151,7 +176,7 @@ class FloatingDotService : Service() {
             y = 300
         }
 
-        floatingDotView = FloatingDotView(this, windowManager, dotParams) {
+        floatingDotView = FloatingDotView(this, windowManager, dotParams, repository) {
             toggleQuickNotesPanel()
         }
 
@@ -205,6 +230,7 @@ class FloatingDotService : Service() {
         try {
             windowManager.addView(quickNotesView, panelParams)
             isPanelOpen = true
+            floatingDotView?.visibility = View.GONE
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -219,11 +245,21 @@ class FloatingDotService : Service() {
             }
             quickNotesView = null
             isPanelOpen = false
+            floatingDotView?.visibility = View.VISIBLE
+            floatingDotView?.updateThemePaints()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post {
+            floatingDotView?.updateThemePaints()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        repository.removeThemeUpdatedListener(serviceThemeListener)
         closeQuickNotesPanel()
         if (floatingDotView != null) {
             try {
