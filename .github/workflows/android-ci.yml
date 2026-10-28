@@ -1,0 +1,66 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'src/**'
+      - 'modules/**'
+      - 'assets/**'
+      - 'index.js'
+      - 'App.js'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'eas.json'
+      - 'eslint.config.js'
+      - '.github/workflows/android-ci.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'src/**'
+      - 'modules/**'
+      - 'assets/**'
+      - 'index.js'
+      - 'App.js'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'eas.json'
+      - 'eslint.config.js'
+      - '.github/workflows/android-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint & Expo Diagnostics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Expo Doctor diagnostics
+        run: npx expo-doctor
+
+      - name: Lint Android codebase
+        run: npm run lint
