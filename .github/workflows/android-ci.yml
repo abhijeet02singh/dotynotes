@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'modules/**'
       - 'assets/**'
+      - 'scripts/**'
       - 'index.js'
       - 'App.js'
       - 'app.json'
@@ -23,6 +24,7 @@ on:
       - 'src/**'
       - 'modules/**'
       - 'assets/**'
+      - 'scripts/**'
       - 'index.js'
       - 'App.js'
       - 'app.json'
@@ -42,7 +44,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Lint & Expo Diagnostics
+    name: Lint, Expo Diagnostics & Regression Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -64,3 +66,6 @@ jobs:
 
       - name: Lint Android codebase
         run: npm run lint
+
+      - name: Run automated regression tests
+        run: npm test

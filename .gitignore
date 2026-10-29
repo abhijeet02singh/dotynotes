@@ -39,3 +39,15 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Gradle & Native caches
+.gradle/
+build/
+android/.gradle/
+modules/**/.gradle/
+
+# Local backups and build outputs
+*.backup
+*.before-new-eas
+eas_build_raw.json
+scripts/activate_android_ci.ps1

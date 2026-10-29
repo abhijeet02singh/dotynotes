@@ -46,14 +46,14 @@ export const APP_CONFIG = {
     packageId: 'com.dotynotes.app',
     sha256Checksum: null,
     downloadUrl: null,
-    releaseNotesUrl: 'https://github.com/abhijeet_singhk02/dotynotes',
-    githubUrl: 'https://github.com/abhijeet_singhk02/dotynotes',
+    releaseNotesUrl: 'https://github.com/abhijeet02singh/dotynotes/releases',
+    githubUrl: 'https://github.com/abhijeet02singh/dotynotes',
   } as ReleaseMetadata,
 
   // Support and legal configuration
   support: {
     email: 'support@dotynotes.app',
-    issuesUrl: 'https://github.com/abhijeet_singhk02/dotynotes/issues',
+    issuesUrl: 'https://github.com/abhijeet02singh/dotynotes/issues',
   },
 
   // Navigation Links

@@ -119,6 +119,20 @@ jobs:
       - name: Lint Android codebase
         run: npm run lint
 
+      - name: Run automated regression tests
+        run: npm test
+
+      - name: Verify Required Secrets
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::Secret EXPO_TOKEN is missing or empty. Please configure it in repository Settings -> Secrets and variables -> Actions."
+            echo "::error::See docs/RELEASE_PROCESS.md for setup instructions."
+            exit 1
+          fi
+          echo "Secret check passed: EXPO_TOKEN is present."
+
   build-and-release:
     name: EAS Build & GitHub Release
     needs: validate
@@ -177,6 +191,14 @@ jobs:
 
           echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
           echo "artifact_url=${ARTIFACT_URL}" >> $GITHUB_OUTPUT
+
+      - name: Archive EAS Build Metadata
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eas-build-metadata
+          path: eas_build_raw.json
+          retention-days: 30
 
       - name: Download & Verify APK Artifact
         id: artifact

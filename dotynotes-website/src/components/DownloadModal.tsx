@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Download, ShieldCheck, Copy, Check, Smartphone, AlertCircle } from 'lucide-react';
 import { APP_CONFIG } from '../constants/config';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useLatestRelease } from '../hooks/useLatestRelease';
 
 interface DownloadModalProps {
   isOpen: boolean;
@@ -11,7 +12,8 @@ interface DownloadModalProps {
 
 export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose }) => {
   const [copiedChecksum, setCopiedChecksum] = useState(false);
-  const release = APP_CONFIG.release;
+  const latestRelease = useLatestRelease();
+  const release = APP_CONFIG.release.isAvailable ? APP_CONFIG.release : latestRelease;
   const dialogRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   const isReleaseReady = Boolean(release.isAvailable && release.downloadUrl);
