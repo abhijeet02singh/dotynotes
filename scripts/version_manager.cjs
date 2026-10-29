@@ -98,10 +98,12 @@ function getStatus() {
     appVersion === pkgVersion &&
     appVersion === webConfig.version &&
     appVersion === manifestVersion &&
-    versionCode === webConfig.versionCode &&
-    versionCode === manifestCode &&
+    webConfig.versionCode === manifestCode &&
+    (!webManifest || webManifest.versionCode === manifestCode) &&
     Number.isInteger(versionCode) &&
-    versionCode > 0;
+    Number.isInteger(manifestCode) &&
+    versionCode >= manifestCode &&
+    manifestCode > 0;
 
   console.log(`Consistent           : ${isConsistent ? 'YES (PASS)' : 'NO (MISMATCH DETECTED)'}`);
   if (!isConsistent) {
