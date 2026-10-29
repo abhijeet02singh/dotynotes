@@ -232,7 +232,7 @@ jobs:
           echo "size_bytes=${FILE_SIZE_BYTES}" >> $GITHUB_OUTPUT
           echo "size_mb=${FILE_SIZE_MB}" >> $GITHUB_OUTPUT
 
-      - name: Generate Release Notes
+      - name: Generate Release Notes & Manifest
         id: notes
         run: |
           cat << 'EOF' > release_notes.md
@@ -260,6 +260,26 @@ jobs:
           3. Launch DotyNotes and grant the *"Appear on top"* permission when prompted to activate the Floating Dot overlay.
           EOF
 
+          node -e "
+            const fs = require('fs');
+            const manifest = {
+              version: '${{ needs.validate.outputs.release_version }}',
+              versionCode: parseInt('${{ needs.validate.outputs.version_code }}', 10),
+              releaseDate: new Date().toISOString().split('T')[0],
+              minAndroidVersion: 'Android 8.0 (API 26) or higher',
+              targetAndroidVersion: 'Android 14 / 15 (API 34/35)',
+              packageId: 'com.dotynotes.app',
+              apkFileName: '${{ steps.artifact.outputs.apk_name }}',
+              downloadUrl: 'https://github.com/${{ github.repository }}/releases/download/${{ needs.validate.outputs.tag_name }}/${{ steps.artifact.outputs.apk_name }}',
+              fileSizeBytes: parseInt('${{ steps.artifact.outputs.size_bytes }}', 10),
+              fileSizeFormatted: '~${{ steps.artifact.outputs.size_mb }} MB',
+              sha256: '${{ steps.artifact.outputs.sha256 }}',
+              releaseNotes: 'DotyNotes v${{ needs.validate.outputs.release_version }} official release with colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.',
+              releaseNotesUrl: 'https://github.com/${{ github.repository }}/releases/tag/${{ needs.validate.outputs.tag_name }}'
+            };
+            fs.writeFileSync('update-manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+          "
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -269,6 +289,7 @@ jobs:
           files: |
             ${{ steps.artifact.outputs.apk_name }}
             ${{ steps.artifact.outputs.apk_name }}.sha256
+            update-manifest.json
           draft: false
           prerelease: false
           make_latest: true

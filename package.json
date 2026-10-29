@@ -4,6 +4,7 @@
   "main": "index.js",
   "dependencies": {
     "expo": "~57.0.31",
+    "expo-application": "~57.0.3",
     "expo-dev-client": "~57.0.20",
     "expo-notifications": "~57.0.24",
     "expo-sqlite": "~57.0.4",
@@ -17,7 +18,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node scripts/richText_test.cjs && node scripts/note_colors_regression_test.cjs && node scripts/onboarding_test.cjs && node scripts/quickpad_theme_test.cjs && node scripts/settings_backup_test.cjs && node scripts/theme_system_test.cjs",
+    "test": "node scripts/richText_test.cjs && node scripts/note_colors_regression_test.cjs && node scripts/onboarding_test.cjs && node scripts/quickpad_theme_test.cjs && node scripts/settings_backup_test.cjs && node scripts/theme_system_test.cjs && node scripts/update_system_test.cjs && node scripts/production_update_flow_test.cjs",
     "version:check": "node scripts/version_manager.cjs status",
     "version:bump": "node scripts/version_manager.cjs bump",
     "release:patch": "node scripts/version_manager.cjs release patch",

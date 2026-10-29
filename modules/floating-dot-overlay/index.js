@@ -281,5 +281,127 @@ export function addOverlayMutationListener(callback) {
   return { remove: () => {} };
 }
 
+/**
+ * Gets the native Android package version and versionCode from PackageManager.
+ */
+export function getNativeAppVersionInfo() {
+  if (NativeOverlay && typeof NativeOverlay.getNativeAppVersion === 'function') {
+    try {
+      return NativeOverlay.getNativeAppVersion();
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks whether the app has permission to install unknown APKs (REQUEST_INSTALL_PACKAGES).
+ */
+export async function canRequestPackageInstallsAsync() {
+  if (NativeOverlay && typeof NativeOverlay.canRequestPackageInstalls === 'function') {
+    try {
+      return await NativeOverlay.canRequestPackageInstalls();
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Opens system settings for "Install unknown apps" for DotyNotes.
+ */
+export async function openUnknownAppSourcesSettingsAsync() {
+  if (NativeOverlay && typeof NativeOverlay.openUnknownAppSourcesSettings === 'function') {
+    try {
+      return await NativeOverlay.openUnknownAppSourcesSettings();
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Downloads the APK using Android DownloadManager and launches the PackageInstaller via FileProvider.
+ */
+export async function downloadAndInstallApkNativeAsync(downloadUrl, fileName) {
+  if (NativeOverlay && typeof NativeOverlay.downloadAndInstallApk === 'function') {
+    try {
+      return await NativeOverlay.downloadAndInstallApk(downloadUrl, fileName || 'DotyNotes-update.apk');
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+  return { success: false, error: 'Native module not available' };
+}
+
+/**
+ * Downloads the APK directly from trusted release URL, computes SHA-256 in real-time,
+ * verifies package ID (com.dotynotes.app), checks versionCode, verifies signature,
+ * and launches the Android PackageInstaller via secure FileProvider.
+ */
+export async function downloadAndVerifyApkNativeAsync({
+  downloadUrl,
+  fileName = 'DotyNotes-update.apk',
+  expectedSha256 = '',
+  expectedPackageId = 'com.dotynotes.app',
+  minVersionCode = 0,
+}) {
+  if (NativeOverlay && typeof NativeOverlay.downloadAndVerifyApk === 'function') {
+    try {
+      return await NativeOverlay.downloadAndVerifyApk(
+        downloadUrl,
+        fileName,
+        expectedSha256,
+        expectedPackageId,
+        minVersionCode
+      );
+    } catch (e) {
+      return { success: false, errorCode: 'NATIVE_EXCEPTION', error: e.message };
+    }
+  }
+  return { success: false, errorCode: 'MODULE_UNAVAILABLE', error: 'Native module not available' };
+}
+
+/**
+ * Launches the Android PackageInstaller for a verified APK file on disk.
+ */
+export async function installVerifiedApkNativeAsync(apkPath) {
+  if (NativeOverlay && typeof NativeOverlay.installVerifiedApk === 'function') {
+    try {
+      return await NativeOverlay.installVerifiedApk(apkPath);
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+  return { success: false, error: 'Native module not available' };
+}
+
+/**
+ * Cancels any active in-flight update download.
+ */
+export function cancelApkDownloadNative() {
+  if (NativeOverlay && typeof NativeOverlay.cancelApkDownload === 'function') {
+    try {
+      return NativeOverlay.cancelApkDownload();
+    } catch (_) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Subscribes to real-time update download progress events.
+ */
+export function addUpdateProgressListener(callback) {
+  if (NativeOverlay && typeof NativeOverlay.addListener === 'function') {
+    return NativeOverlay.addListener('onUpdateDownloadProgress', callback);
+  }
+  return { remove: () => {} };
+}
+
 export { default as DotyRichTextEditor } from './DotyRichTextEditor';
 

@@ -7,16 +7,23 @@ import {
   TouchableOpacity,
   Image,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import SettingsIcon from '../components/SettingsIcon';
 import { useTheme } from '../context/ThemeContext';
-import appConfig from '../../app.json';
+import { getInstalledAppVersion } from '../services/updateService';
 
-export default function AboutScreen({ onBack, onNavigateToPrivacy, onReplayOnboarding }) {
+export default function AboutScreen({
+  onBack,
+  onNavigateToPrivacy,
+  onReplayOnboarding,
+  onCheckForUpdates,
+  isCheckingUpdate = false,
+}) {
   const { theme, isDark } = useTheme();
   const styles = React.useMemo(() => createAboutStyles(theme, isDark), [theme, isDark]);
   const neutralIconColor = isDark ? '#A7ADBA' : '#4B5563';
-  const version = appConfig.expo?.version || '1.0.0';
+  const version = getInstalledAppVersion();
 
   const features = [
     {
@@ -217,7 +224,34 @@ export default function AboutScreen({ onBack, onNavigateToPrivacy, onReplayOnboa
           </Text>
         </View>
 
-        {/* 8. Replay Onboarding Navigation Card */}
+        {/* 8. Check for Updates Navigation Card */}
+        {onCheckForUpdates && (
+          <TouchableOpacity
+            style={styles.clickableCard}
+            onPress={onCheckForUpdates}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Check for Updates"
+            disabled={isCheckingUpdate}
+          >
+            <View style={styles.iconContainer}>
+              <SettingsIcon name="refresh" size={18} color={neutralIconColor} />
+            </View>
+            <View style={styles.featureTextCol}>
+              <Text style={styles.featureTitle}>Check for Updates</Text>
+              <Text style={styles.featureSubtitle}>
+                {isCheckingUpdate ? 'Checking for updates...' : 'Check if a newer version is available'}
+              </Text>
+            </View>
+            {isCheckingUpdate ? (
+              <ActivityIndicator size="small" color={theme.colors.accent || '#8B5CF6'} />
+            ) : (
+              <SettingsIcon name="chevron-right" size={12} color={theme.colors.textSecondary} />
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* 9. Replay Onboarding Navigation Card */}
         {onReplayOnboarding && (
           <TouchableOpacity
             style={styles.clickableCard}

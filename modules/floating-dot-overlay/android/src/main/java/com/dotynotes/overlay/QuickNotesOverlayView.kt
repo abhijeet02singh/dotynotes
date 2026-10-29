@@ -269,7 +269,7 @@ class QuickNotesOverlayView(
             }
 
             val icon = TextView(context).apply {
-                text = "➕ "
+                text = " "
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 setTextColor(Color.WHITE)
             }
@@ -620,7 +620,7 @@ class QuickNotesOverlayView(
         }
 
         editorDeleteBtn = TextView(context).apply {
-            text = "🗑 Delete"
+            text = " Delete"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#9D174D"))
@@ -665,7 +665,7 @@ class QuickNotesOverlayView(
         bottomActionsRow.addView(editorCompleteBtn)
 
         editorSaveBtn = Button(context).apply {
-            text = "Save Note 💾"
+            text = "Save Note "
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -799,7 +799,7 @@ class QuickNotesOverlayView(
             editorDeleteBtn.visibility = View.VISIBLE
             editorCompleteBtn.visibility = View.VISIBLE
             editorCompleteBtn.text = if (note.isArchived) "Restore" else "✓ Complete"
-            editorSaveBtn.text = "Update Note ✏️"
+            editorSaveBtn.text = "Update Note "
             editorStatusBadge.text = "Saved ✓"
         } else {
             // Create Mode
@@ -809,7 +809,7 @@ class QuickNotesOverlayView(
             editorContentInput.setText("")
             editorDeleteBtn.visibility = View.GONE
             editorCompleteBtn.visibility = View.GONE
-            editorSaveBtn.text = "Save Note 💾"
+            editorSaveBtn.text = "Save Note "
             editorStatusBadge.text = "New Note"
         }
 

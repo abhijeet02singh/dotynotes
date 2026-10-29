@@ -19,6 +19,8 @@ import NotesGrid from '../components/NotesGrid';
 import EmptyState from '../components/EmptyState';
 import FloatingActionButton from '../components/FloatingActionButton';
 import NoteEditorModal from '../components/NoteEditorModal';
+import UpdateModal from '../components/UpdateModal';
+import AppDialog from '../components/AppDialog';
 import BottomNavigation from '../components/BottomNavigation';
 import AppIcon from '../components/AppIcon';
 import FloatingDotScreen from './FloatingDotScreen';
@@ -26,6 +28,12 @@ import SettingsScreen from './SettingsScreen';
 import AboutScreen from './AboutScreen';
 import PrivacyPolicyScreen from './PrivacyPolicyScreen';
 import OnboardingScreen from './OnboardingScreen';
+import {
+  checkForUpdatesAsync,
+  openApkDownloadAsync,
+  dismissUpdateVersionAsync,
+  getInstalledAppVersion,
+} from '../services/updateService';
 import {
   initDatabase,
   getAllNotesAsync,
@@ -93,6 +101,53 @@ export default function HomeScreen() {
     getSettingAsync('default_note_color', 'purple').then((savedColor) => {
       if (savedColor) setDefaultNoteColor(savedColor);
     });
+  }, []);
+
+  // In-app update states
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [availableRelease, setAvailableRelease] = useState(null);
+  const [upToDateDialogVisible, setUpToDateDialogVisible] = useState(false);
+  const [updateErrorDialogVisible, setUpdateErrorDialogVisible] = useState(false);
+  const [updateErrorMessage, setUpdateErrorMessage] = useState('');
+
+  // Manual check for updates (called from SettingsScreen or AboutScreen)
+  const handleCheckForUpdates = useCallback(async () => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    try {
+      const result = await checkForUpdatesAsync({ isManual: true });
+      if (result?.isAvailable && result?.release) {
+        setAvailableRelease(result.release);
+        setUpdateModalVisible(true);
+      } else {
+        setUpToDateDialogVisible(true);
+      }
+    } catch (err) {
+      setUpdateErrorMessage(
+        err.message || 'Unable to check for updates. Please verify your internet connection and try again.'
+      );
+      setUpdateErrorDialogVisible(true);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, [isCheckingUpdate]);
+
+  // Automatic startup update check (non-blocking, respects cache and dismissed version)
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const result = await checkForUpdatesAsync({ isManual: false });
+        if (result?.isAvailable && !result?.isDismissed && result?.release) {
+          setAvailableRelease(result.release);
+          setUpdateModalVisible(true);
+        }
+      } catch (_) {
+        // Silent failure for background startup check
+      }
+    }, 2500);
+
+    return () => clearTimeout(timer);
   }, []);
 
   // Load notes from SQLite with optional silent background refresh
@@ -620,12 +675,16 @@ export default function HomeScreen() {
             onNavigateToAbout={() => navigateTo('about')}
             onNavigateToPrivacy={() => navigateTo('privacy')}
             onReplayOnboarding={() => navigateTo('onboarding')}
+            onCheckForUpdates={handleCheckForUpdates}
+            isCheckingUpdate={isCheckingUpdate}
           />
         ) : currentNav === 'about' ? (
           <AboutScreen
             onBack={navigateBack}
             onNavigateToPrivacy={() => navigateTo('privacy')}
             onReplayOnboarding={() => navigateTo('onboarding')}
+            onCheckForUpdates={handleCheckForUpdates}
+            isCheckingUpdate={isCheckingUpdate}
           />
         ) : currentNav === 'privacy' ? (
           <PrivacyPolicyScreen
@@ -916,6 +975,75 @@ export default function HomeScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* In-App Update Modal */}
+        <UpdateModal
+          visible={updateModalVisible}
+          release={availableRelease}
+          onDismiss={async () => {
+            setUpdateModalVisible(false);
+            if (availableRelease?.version) {
+              await dismissUpdateVersionAsync(availableRelease.version);
+            }
+          }}
+          onUpdate={async (downloadUrl) => {
+            setUpdateModalVisible(false);
+            await openApkDownloadAsync(
+              downloadUrl,
+              availableRelease?.releaseNotesUrl,
+              availableRelease?.apkFileName
+            );
+          }}
+          onComplete={() => {
+            setUpdateModalVisible(false);
+          }}
+        />
+
+        {/* Up To Date Dialog (Manual Check) */}
+        <AppDialog
+          visible={upToDateDialogVisible}
+          title="You're Up to Date"
+          subtitle={`DotyNotes v${getInstalledAppVersion()}`}
+          message="You are using the latest official release of DotyNotes. No updates are currently needed."
+          icon="shield"
+          iconColor="#10B981"
+          iconBgColor="rgba(16, 185, 129, 0.15)"
+          onClose={() => setUpToDateDialogVisible(false)}
+          buttons={[
+            {
+              text: 'OK',
+              style: 'primary',
+              onPress: () => setUpToDateDialogVisible(false),
+            },
+          ]}
+        />
+
+        {/* Update Check Error Dialog (Manual Check) */}
+        <AppDialog
+          visible={updateErrorDialogVisible}
+          title="Update Check Failed"
+          subtitle="Network or Server Issue"
+          message={updateErrorMessage}
+          icon="info"
+          iconColor="#EF4444"
+          iconBgColor="rgba(239, 68, 68, 0.15)"
+          onClose={() => setUpdateErrorDialogVisible(false)}
+          buttons={[
+            {
+              text: 'Close',
+              style: 'cancel',
+              onPress: () => setUpdateErrorDialogVisible(false),
+            },
+            {
+              text: 'Retry',
+              style: 'primary',
+              onPress: () => {
+                setUpdateErrorDialogVisible(false);
+                setTimeout(() => handleCheckForUpdates(), 250);
+              },
+            },
+          ]}
+        />
       </View>
     </View>
   );

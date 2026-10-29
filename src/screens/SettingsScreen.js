@@ -37,7 +37,7 @@ import {
   requestNotificationPermissionAsync,
   getReminderDeliveryStatusAsync,
 } from '../services/notificationService';
-import appConfig from '../../app.json';
+import { getInstalledAppVersion } from '../services/updateService';
 import AppDialog from '../components/AppDialog';
 import PermissionDialog from '../components/PermissionDialog';
 import SelectionModal from '../components/SelectionModal';
@@ -50,6 +50,8 @@ export default function SettingsScreen({
   onNavigateToAbout,
   onNavigateToPrivacy,
   onReplayOnboarding,
+  onCheckForUpdates,
+  isCheckingUpdate = false,
 }) {
   const {
     themeMode,
@@ -909,7 +911,7 @@ export default function SettingsScreen({
         </View>
 
         {/* ==================================================
-            SECTION F: ABOUT (Flick-Style 3 Primary Rows)
+            SECTION F: ABOUT (Flick-Style Rows)
             ================================================== */}
         <Text style={styles.sectionHeader}>ABOUT</Text>
         <View style={styles.sectionCard}>
@@ -921,12 +923,42 @@ export default function SettingsScreen({
             <View style={styles.textContainer}>
               <Text style={styles.itemTitle}>Version</Text>
             </View>
-            <Text style={styles.valueTextBold}>v{appConfig.expo?.version || '1.0.0'}</Text>
+            <Text style={styles.valueTextBold}>v{getInstalledAppVersion()}</Text>
           </View>
 
           <View style={styles.divider} />
 
-          {/* Row 2: About DotyNotes */}
+          {/* Row 2: Check for Updates */}
+          {onCheckForUpdates && (
+            <>
+              <TouchableOpacity
+                style={styles.itemRow}
+                onPress={onCheckForUpdates}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Check for Updates"
+                disabled={isCheckingUpdate}
+              >
+                <View style={styles.iconContainer}>
+                  <SettingsIcon name="refresh" size={18} color={neutralIconColor} />
+                </View>
+                <View style={styles.textContainer}>
+                  <Text style={styles.itemTitle}>Check for Updates</Text>
+                  <Text style={styles.itemSubtitle}>
+                    {isCheckingUpdate ? 'Checking for updates...' : 'Verify latest DotyNotes release'}
+                  </Text>
+                </View>
+                {isCheckingUpdate ? (
+                  <ActivityIndicator size="small" color={theme.colors.accent} />
+                ) : (
+                  <SettingsIcon name="chevron-right" size={11} color={theme.colors.secondaryText} />
+                )}
+              </TouchableOpacity>
+              <View style={styles.divider} />
+            </>
+          )}
+
+          {/* Row 3: About DotyNotes */}
           <TouchableOpacity
             style={styles.itemRow}
             onPress={onNavigateToAbout}

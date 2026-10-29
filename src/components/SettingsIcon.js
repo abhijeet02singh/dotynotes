@@ -985,6 +985,7 @@ export default function SettingsIcon({ name, size = 18, color: explicitColor }) 
       );
 
     case 'refresh':
+    case 'update':
       // Circular reload icon
       return (
         <View style={[styles.center, { width: size, height: size }]}>
@@ -1367,6 +1368,28 @@ export default function SettingsIcon({ name, size = 18, color: explicitColor }) 
               }}
             />
           </View>
+        </View>
+      );
+
+
+    case 'download':
+      // Download arrow pointing down into tray
+      return (
+        <View style={[styles.center, { width: size, height: size }]}>
+          <View style={{ width: 1.8, height: size - 8, backgroundColor: color, marginBottom: 2 }} />
+          <View
+            style={{
+              width: 5,
+              height: 5,
+              borderBottomWidth: 1.8,
+              borderRightWidth: 1.8,
+              borderColor: color,
+              transform: [{ rotate: '45deg' }],
+              marginTop: -6,
+              marginBottom: 3,
+            }}
+          />
+          <View style={{ width: size - 4, height: 1.8, backgroundColor: color }} />
         </View>
       );
 

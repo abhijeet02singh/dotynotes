@@ -20,6 +20,8 @@ const APP_JSON_PATH = path.join(REPO_ROOT, 'app.json');
 const PACKAGE_JSON_PATH = path.join(REPO_ROOT, 'package.json');
 const PACKAGE_LOCK_PATH = path.join(REPO_ROOT, 'package-lock.json');
 const WEBSITE_CONFIG_PATH = path.join(REPO_ROOT, 'dotynotes-website', 'src', 'constants', 'config.ts');
+const ROOT_MANIFEST_PATH = path.join(REPO_ROOT, 'update-manifest.json');
+const WEBSITE_MANIFEST_PATH = path.join(REPO_ROOT, 'dotynotes-website', 'public', 'update-manifest.json');
 
 const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
@@ -31,6 +33,15 @@ function readAppJson() {
 function readPackageJson() {
   const content = fs.readFileSync(PACKAGE_JSON_PATH, 'utf-8');
   return JSON.parse(content);
+}
+
+function readManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  } catch (_) {
+    return null;
+  }
 }
 
 function readWebsiteConfig() {
@@ -65,10 +76,14 @@ function getStatus() {
   const appJson = readAppJson();
   const pkgJson = readPackageJson();
   const webConfig = readWebsiteConfig();
+  const rootManifest = readManifest(ROOT_MANIFEST_PATH);
+  const webManifest = readManifest(WEBSITE_MANIFEST_PATH);
 
   const appVersion = appJson.expo?.version || null;
   const versionCode = appJson.expo?.android?.versionCode !== undefined ? appJson.expo.android.versionCode : null;
   const pkgVersion = pkgJson.version || null;
+  const manifestVersion = rootManifest?.version || null;
+  const manifestCode = rootManifest?.versionCode || null;
 
   console.log('--- DotyNotes Version Status ---');
   console.log(`app.json version     : ${appVersion}`);
@@ -76,11 +91,15 @@ function getStatus() {
   console.log(`package.json version : ${pkgVersion}`);
   console.log(`website config ver   : ${webConfig.version}`);
   console.log(`website versionCode  : ${webConfig.versionCode}`);
+  console.log(`manifest version     : ${manifestVersion}`);
+  console.log(`manifest versionCode : ${manifestCode}`);
 
   const isConsistent =
     appVersion === pkgVersion &&
     appVersion === webConfig.version &&
+    appVersion === manifestVersion &&
     versionCode === webConfig.versionCode &&
+    versionCode === manifestCode &&
     Number.isInteger(versionCode) &&
     versionCode > 0;
 
@@ -131,6 +150,27 @@ function applyVersions(newVersion, newVersionCode) {
 
   fs.writeFileSync(WEBSITE_CONFIG_PATH, updatedConfig, 'utf-8');
   console.log(`✓ Updated dotynotes-website config: version = ${newVersion}, versionCode = ${newVersionCode}`);
+
+  // 5. Update update-manifest.json files (both root and website public)
+  const manifestData = {
+    version: newVersion,
+    versionCode: newVersionCode,
+    releaseDate: new Date().toISOString().split('T')[0],
+    minAndroidVersion: 'Android 8.0 (API 26) or higher',
+    targetAndroidVersion: 'Android 14 / 15 (API 34/35)',
+    packageId: 'com.dotynotes.app',
+    apkFileName: `DotyNotes-v${newVersion}.apk`,
+    downloadUrl: `https://github.com/abhijeet02singh/dotynotes/releases/download/v${newVersion}/DotyNotes-v${newVersion}.apk`,
+    fileSizeBytes: 77385920,
+    fileSizeFormatted: '~73.8 MB',
+    sha256: null,
+    releaseNotes: `DotyNotes v${newVersion} official release with colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.`,
+    releaseNotesUrl: `https://github.com/abhijeet02singh/dotynotes/releases/tag/v${newVersion}`,
+  };
+
+  fs.writeFileSync(ROOT_MANIFEST_PATH, JSON.stringify(manifestData, null, 2) + '\n', 'utf-8');
+  fs.writeFileSync(WEBSITE_MANIFEST_PATH, JSON.stringify(manifestData, null, 2) + '\n', 'utf-8');
+  console.log(`✓ Updated update-manifest.json files: version = ${newVersion}, versionCode = ${newVersionCode}`);
 }
 
 function bumpVersion(bumpType) {
@@ -317,6 +357,8 @@ function release(bumpType = 'patch', options = {}) {
     'package.json',
     'package-lock.json',
     path.join('dotynotes-website', 'src', 'constants', 'config.ts'),
+    'update-manifest.json',
+    path.join('dotynotes-website', 'public', 'update-manifest.json'),
   ];
   execSync(`git add ${filesToStage.map(f => `"${f}"`).join(' ')}`, { cwd: REPO_ROOT, stdio: 'inherit' });
   execSync(`git commit -m "chore(release): bump version to v${nextVersion}"`, { cwd: REPO_ROOT, stdio: 'inherit' });

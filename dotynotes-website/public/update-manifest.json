@@ -1,0 +1,15 @@
+{
+  "version": "1.0.1",
+  "versionCode": 2,
+  "releaseDate": "2026-10-29",
+  "minAndroidVersion": "Android 8.0 (API 26) or higher",
+  "targetAndroidVersion": "Android 14 / 15 (API 34/35)",
+  "packageId": "com.dotynotes.app",
+  "apkFileName": "DotyNotes-v1.0.1.apk",
+  "downloadUrl": "https://github.com/abhijeet02singh/dotynotes/releases/download/v1.0.1/DotyNotes-v1.0.1.apk",
+  "fileSizeBytes": 77385920,
+  "fileSizeFormatted": "~73.8 MB",
+  "sha256": "08fe6f21b373da9c2a49efa9eb2b9b1568c8e6b76b839c8e15113b404a10eb22",
+  "releaseNotes": "DotyNotes v1.0.1 official release with colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.",
+  "releaseNotesUrl": "https://github.com/abhijeet02singh/dotynotes/releases/tag/v1.0.1"
+}
