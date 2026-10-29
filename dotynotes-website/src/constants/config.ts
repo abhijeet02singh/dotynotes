@@ -35,10 +35,10 @@ export const APP_CONFIG = {
   // Release Metadata (Strictly verifiable from app.json & actual build specifications)
   release: {
     isAvailable: false,
-    version: '1.0.1',
-    versionCode: 2,
+    version: '1.0.2',
+    versionCode: 5,
     releaseDate: 'Upcoming Release',
-    apkFileName: 'DotyNotes-v1.0.1.apk',
+    apkFileName: 'DotyNotes-v1.0.2.apk',
     fileSizeBytes: 38168576,
     fileSizeFormatted: '~36.4 MB',
     minAndroidVersion: 'Android 8.0 (API 26) or higher',
