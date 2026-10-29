@@ -3,7 +3,7 @@ name: Android Release
 'on':
   push:
     tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -172,15 +172,16 @@ jobs:
           echo "Starting non-interactive EAS build for profile 'release-apk'..."
           eas build --platform android --profile release-apk --non-interactive --json --wait > eas_build_raw.json
 
-          BUILD_STATUS=$(node -e "const d=require('./eas_build_raw.json'); console.log(Array.isArray(d) ? d[0]?.status : d?.status)")
-          BUILD_ID=$(node -e "const d=require('./eas_build_raw.json'); console.log(Array.isArray(d) ? d[0]?.id : d?.id)")
-          ARTIFACT_URL=$(node -e "const d=require('./eas_build_raw.json'); const b=Array.isArray(d)?d[0]:d; console.log(b?.artifacts?.applicationArchiveUrl || b?.artifacts?.buildUrl || '')")
+          BUILD_STATUS=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log((b?.status||'').toUpperCase());")
+          BUILD_ID=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.id||'');")
+          ARTIFACT_URL=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.artifacts?.applicationArchiveUrl || b?.artifacts?.buildUrl || '');")
 
           echo "EAS Build ID: ${BUILD_ID}"
           echo "EAS Build Status: ${BUILD_STATUS}"
 
-          if [ "${BUILD_STATUS}" != "finished" ]; then
-            echo "::error::EAS build did not finish successfully. Status: '${BUILD_STATUS}'."
+          if [ "${BUILD_STATUS}" != "FINISHED" ] && [ "${BUILD_STATUS}" != "finished" ]; then
+            BUILD_ERROR=$(node -e "const fs=require('fs'); try { const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.error?.message || ''); } catch(e){}")
+            echo "::error::EAS build did not finish successfully. Status: '${BUILD_STATUS}'. Details: ${BUILD_ERROR}"
             exit 1
           fi
 

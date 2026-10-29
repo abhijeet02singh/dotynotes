@@ -19,7 +19,11 @@
     "lint": "expo lint",
     "test": "node scripts/richText_test.cjs && node scripts/note_colors_regression_test.cjs && node scripts/onboarding_test.cjs && node scripts/quickpad_theme_test.cjs && node scripts/settings_backup_test.cjs && node scripts/theme_system_test.cjs",
     "version:check": "node scripts/version_manager.cjs status",
-    "version:bump": "node scripts/version_manager.cjs bump"
+    "version:bump": "node scripts/version_manager.cjs bump",
+    "release:patch": "node scripts/version_manager.cjs release patch",
+    "release:minor": "node scripts/version_manager.cjs release minor",
+    "release:major": "node scripts/version_manager.cjs release major",
+    "release:dry-run": "node scripts/version_manager.cjs release patch --dry-run"
   },
   "private": true,
   "devDependencies": {

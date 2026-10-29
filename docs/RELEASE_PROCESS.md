@@ -83,32 +83,68 @@ The `android-release.yml` workflow requires:
 
 ## 5. How to Publish an Android Release
 
-### Step 1: Prepare and Commit the Version Bump
-1. On your local machine, run:
+### Option A: One-Command Automated Release (Recommended)
+
+Run the release script from your terminal:
+```bash
+# Verify all pre-release checks without modifying files or git state
+npm run release:dry-run
+
+# Automatically validate working tree, run all tests, bump version, commit, tag, and trigger GitHub Actions
+npm run release:patch   # e.g. 1.0.0 -> 1.0.1, versionCode: 1 -> 2
+npm run release:minor   # e.g. 1.0.1 -> 1.1.0, versionCode: 2 -> 3
+npm run release:major   # e.g. 1.1.0 -> 2.0.0, versionCode: 3 -> 4
+```
+
+The script enforces:
+1. Clean working tree (no uncommitted or untracked changes).
+2. Clean `master` branch.
+3. Pre-release version consistency check.
+4. Duplicate tag check (local and remote).
+5. All 6 root automated regression test suites + linter + website tests.
+6. Atomic version bump across `app.json`, `package.json`, and website config.
+7. Git commit (`chore(release): bump version to vX.Y.Z`).
+8. Annotated Git tag (`vX.Y.Z`).
+9. Git push of commit and tag to `origin master`.
+10. Tag push automatically triggers the `.github/workflows/android-release.yml` pipeline on GitHub Actions.
+
+---
+
+### Option B: Manual Tag Push
+
+1. Bump version locally:
    ```bash
-   npm run version:bump patch # or minor / major
+   npm run version:bump patch
    ```
-2. Verify all tests pass:
+2. Run tests to ensure quality:
    ```bash
    npm test
    npm run lint
    npm run version:check
    ```
-3. Commit and push the version bump to `master`:
+3. Commit and push commit + tag to GitHub:
    ```bash
    git add app.json package.json package-lock.json dotynotes-website/src/constants/config.ts
-   git commit -m "chore(release): bump version to 1.0.1"
+   git commit -m "chore(release): bump version to v1.0.1"
+   git tag -a "v1.0.1" -m "Release v1.0.1"
    git push origin master
+   git push origin v1.0.1
    ```
+   Pushing the `v1.0.1` tag automatically triggers the Android Release workflow.
 
-### Step 2: Trigger the Release Workflow
-1. Navigate to the GitHub repository:  
+---
+
+### Option C: Manual Trigger via GitHub Actions UI
+
+1. Navigate to:  
    `https://github.com/abhijeet02singh/dotynotes/actions/workflows/android-release.yml`
 2. Click **Run workflow**.
-3. Enter the release version matching `app.json` (e.g. `1.0.1`).
+3. Enter the release version matching `app.json` (e.g. `1.0.0`).
 4. Click **Run workflow**.
 
-### Step 3: Automated Pipeline Execution
+---
+
+### Step 2: Automated Pipeline Execution on GitHub Actions
 The pipeline will automatically:
 1. **Pre-flight Quality Gate:** Verify `EXPO_TOKEN`, assert version matches `app.json` and `package.json`, check for duplicate GitHub tags, and run the full test suite.
 2. **EAS Cloud Build:** Invoke `eas build --platform android --profile release-apk` non-interactively using the configured EAS credentials.

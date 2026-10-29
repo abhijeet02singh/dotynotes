@@ -175,6 +175,168 @@ function bumpVersion(bumpType) {
   console.log('\nVersion bump completed successfully.');
 }
 
+function release(bumpType = 'patch', options = {}) {
+  const isDryRun = options.dryRun || false;
+  console.log('\n========================================');
+  console.log(`DotyNotes Safe Release Automation (${bumpType.toUpperCase()})`);
+  if (isDryRun) {
+    console.log('   [DRY RUN MODE - No files or git state will be modified]');
+  }
+  console.log('========================================\n');
+
+  // Step 1: Verify working tree is clean
+  console.log('👉 [Step 1/8] Checking git working tree...');
+  let gitStatus;
+  try {
+    gitStatus = execSync('git status --porcelain', { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
+  } catch (err) {
+    throw new Error(`Git status check failed: ${err.message}`);
+  }
+
+  if (gitStatus.length > 0) {
+    console.error('\n❌ Release Aborted: Git working tree is dirty.');
+    console.error('Uncommitted changes detected in repository:');
+    console.error(gitStatus);
+    console.error('\nPlease commit, stash, or review your changes before running release.\n');
+    process.exit(1);
+  }
+  console.log('   ✅ Working tree is clean (no uncommitted or untracked changes).');
+
+  // Step 2: Check current branch
+  console.log('\n👉 [Step 2/8] Checking current git branch...');
+  let currentBranch;
+  try {
+    currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
+  } catch (err) {
+    throw new Error(`Git branch check failed: ${err.message}`);
+  }
+
+  if (currentBranch !== 'master') {
+    console.error(`\n❌ Release Aborted: Releases must be initiated from 'master' branch (current: '${currentBranch}').\n`);
+    process.exit(1);
+  }
+  console.log(`   ✅ On branch '${currentBranch}'.`);
+
+  // Step 3: Check version consistency across project declarations
+  console.log('\n👉 [Step 3/8] Validating version consistency...');
+  const { appVersion, versionCode, isConsistent } = getStatus();
+  if (!isConsistent || !appVersion || !versionCode) {
+    console.error('\n❌ Release Aborted: Project version declarations are inconsistent.');
+    console.error('Run `npm run version:check` to inspect mismatches.\n');
+    process.exit(1);
+  }
+  console.log(`   ✅ Current versions consistent: ${appVersion} (versionCode: ${versionCode}).`);
+
+  // Calculate next version
+  const parsed = parseSemver(appVersion);
+  let nextMajor = parsed.major;
+  let nextMinor = parsed.minor;
+  let nextPatch = parsed.patch;
+
+  if (bumpType === 'patch') {
+    nextPatch += 1;
+  } else if (bumpType === 'minor') {
+    nextMinor += 1;
+    nextPatch = 0;
+  } else if (bumpType === 'major') {
+    nextMajor += 1;
+    nextMinor = 0;
+    nextPatch = 0;
+  } else if (SEMVER_REGEX.test(bumpType.replace(/^v/, ''))) {
+    const custom = parseSemver(bumpType);
+    if (compareSemver(custom.formatted, appVersion) <= 0) {
+      throw new Error(`Custom version '${custom.formatted}' must be strictly greater than current version '${appVersion}'.`);
+    }
+    nextMajor = custom.major;
+    nextMinor = custom.minor;
+    nextPatch = custom.patch;
+  } else {
+    throw new Error(`Unknown bump type: '${bumpType}'. Must be 'patch', 'minor', 'major', or an explicit 'X.Y.Z'.`);
+  }
+
+  const nextVersion = `${nextMajor}.${nextMinor}.${nextPatch}`;
+  const nextVersionCode = versionCode + 1;
+  const targetTag = `v${nextVersion}`;
+
+  console.log(`\n🎯 Target Release: ${appVersion} -> ${nextVersion} (versionCode: ${versionCode} -> ${nextVersionCode}, Tag: ${targetTag})`);
+
+  // Step 4: Verify target tag does not already exist
+  console.log('\n👉 [Step 4/8] Checking for tag collisions...');
+  let localTags;
+  try {
+    localTags = execSync(`git tag -l "${targetTag}"`, { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
+  } catch (err) {
+    localTags = '';
+  }
+  if (localTags === targetTag) {
+    console.error(`\n❌ Release Aborted: Local git tag '${targetTag}' already exists.\n`);
+    process.exit(1);
+  }
+
+  try {
+    const remoteTagCheck = execSync(`git ls-remote --tags origin "refs/tags/${targetTag}"`, { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
+    if (remoteTagCheck.length > 0) {
+      console.error(`\n❌ Release Aborted: Remote git tag '${targetTag}' already exists on origin.\n`);
+      process.exit(1);
+    }
+  } catch (err) {
+    console.warn(`   ⚠️ Warning: Could not query remote tags: ${err.message}`);
+  }
+  console.log(`   ✅ Tag '${targetTag}' is available.`);
+
+  // Step 5: Run quality gate tests
+  console.log('\n👉 [Step 5/8] Running pre-release quality gate (automated regression tests & lint)...');
+  try {
+    console.log('   Running npm test (6 test suites)...');
+    execSync('npm test', { cwd: REPO_ROOT, stdio: 'inherit' });
+    console.log('   Running npm run lint...');
+    execSync('npm run lint', { cwd: REPO_ROOT, stdio: 'inherit' });
+    console.log('   Running website tests...');
+    execSync('npm --prefix dotynotes-website run test', { cwd: REPO_ROOT, stdio: 'inherit' });
+  } catch (err) {
+    console.error('\n❌ Release Aborted: Pre-release quality gate failed. Fix errors before releasing.\n');
+    process.exit(1);
+  }
+  console.log('   ✅ All quality gate tests passed.');
+
+  if (isDryRun) {
+    console.log('\n✨ [DRY RUN COMPLETE] Pre-release checks passed successfully.');
+    console.log(`Would bump to: ${nextVersion} (versionCode: ${nextVersionCode})`);
+    console.log(`Would commit and push tag: ${targetTag}\n`);
+    return;
+  }
+
+  // Step 6: Atomic version bump
+  console.log('\n👉 [Step 6/8] Applying atomic version bump...');
+  applyVersions(nextVersion, nextVersionCode);
+
+  // Step 7: Commit version bump
+  console.log('\n👉 [Step 7/8] Creating git release commit and tag...');
+  const filesToStage = [
+    'app.json',
+    'package.json',
+    'package-lock.json',
+    path.join('dotynotes-website', 'src', 'constants', 'config.ts'),
+  ];
+  execSync(`git add ${filesToStage.map(f => `"${f}"`).join(' ')}`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  execSync(`git commit -m "chore(release): bump version to v${nextVersion}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  execSync(`git tag -a "${targetTag}" -m "Release ${targetTag}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  console.log(`   ✅ Created commit and annotated tag '${targetTag}'.`);
+
+  // Step 8: Push commit and tag to GitHub
+  console.log('\n👉 [Step 8/8] Pushing release commit and tag to origin...');
+  execSync('git push origin master', { cwd: REPO_ROOT, stdio: 'inherit' });
+  execSync(`git push origin "${targetTag}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
+
+  console.log('\n========================================');
+  console.log('🎉 RELEASE TRIGGERED SUCCESSFULLY!');
+  console.log(`   Version: ${nextVersion} (versionCode: ${nextVersionCode})`);
+  console.log(`   Tag: ${targetTag}`);
+  console.log('   GitHub Actions is now running the Android Release workflow.');
+  console.log('   Track build at: https://github.com/abhijeet02singh/dotynotes/actions');
+  console.log('========================================\n');
+}
+
 // CLI handler
 const args = process.argv.slice(2);
 const command = args[0] || 'status';
@@ -192,6 +354,13 @@ try {
       break;
     }
 
+    case 'release': {
+      const type = args[1] || 'patch';
+      const isDryRun = args.includes('--dry-run');
+      release(type, { dryRun: isDryRun });
+      break;
+    }
+
     case 'set': {
       const targetVersion = args[1];
       const targetCode = args[2] ? parseInt(args[2], 10) : undefined;
@@ -206,10 +375,11 @@ try {
     }
 
     default:
-      console.log('Usage: node scripts/version_manager.cjs <status|bump|set>');
-      console.log('  status                 - check consistency of all version declarations');
-      console.log('  bump <patch|minor|major|X.Y.Z> - increment version and versionCode');
-      console.log('  set <X.Y.Z> [code]     - set exact version and optional versionCode');
+      console.log('Usage: node scripts/version_manager.cjs <status|bump|release|set>');
+      console.log('  status                         - check consistency of all version declarations');
+      console.log('  bump <patch|minor|major|X.Y.Z> - increment version and versionCode locally');
+      console.log('  release <patch|minor|major>    - validate, bump, commit, tag and push release');
+      console.log('  set <X.Y.Z> [code]             - set exact version and optional versionCode');
       break;
   }
 } catch (err) {
