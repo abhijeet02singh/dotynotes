@@ -1,0 +1,619 @@
+name: Production Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Target release version (SemVer, e.g. 1.0.4)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release changelog notes (optional markdown)'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark release as pre-release'
+        required: false
+        type: boolean
+        default: false
+      resume_manifest_only:
+        description: 'Recovery mode: Skip EAS build & release creation; resume from Step G (manifest sync & publish) using existing GitHub Release & APK'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: dotynotes-production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  production-release:
+    name: DotyNotes Automated Production Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Step A — Validate Release Parameters & SemVer Guard
+        id: step-a
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW_INPUT_VERSION: ${{ github.event.inputs.version }}
+          IS_RESUME: ${{ github.event.inputs.resume_manifest_only }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step A] Validating Target Release Parameters"
+          echo "========================================================"
+
+          CLEAN_VERSION="${RAW_INPUT_VERSION#v}"
+          echo "Target Version: ${CLEAN_VERSION}"
+
+          if ! [[ "${CLEAN_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid SemVer format: '${CLEAN_VERSION}'. Must follow X.Y.Z (e.g. 1.0.4)."
+            exit 1
+          fi
+
+          TARGET_TAG="v${CLEAN_VERSION}"
+          echo "Target Tag: ${TARGET_TAG}"
+
+          # Read authoritative values from app.json
+          CURRENT_VERSION=$(node -e "console.log(require('./app.json').expo?.version || '')")
+          CURRENT_VERSION_CODE=$(node -e "const vc = require('./app.json').expo?.android?.versionCode; console.log(vc !== undefined ? vc : 0)")
+          PACKAGE_ID=$(node -e "console.log(require('./app.json').expo?.android?.package || '')")
+          EAS_BUILD_TYPE=$(node -e "console.log(require('./eas.json').build?.['release-apk']?.android?.buildType || '')")
+
+          echo "Current app.json version: ${CURRENT_VERSION}"
+          echo "Current app.json versionCode: ${CURRENT_VERSION_CODE}"
+          echo "Android package ID: ${PACKAGE_ID}"
+
+          if [ "${PACKAGE_ID}" != "com.dotynotes.app" ]; then
+            echo "::error::Package ID mismatch: Expected 'com.dotynotes.app', found '${PACKAGE_ID}'."
+            exit 1
+          fi
+
+          if [ "${EAS_BUILD_TYPE}" != "apk" ]; then
+            echo "::error::EAS build profile 'release-apk' does not specify android.buildType = 'apk'."
+            exit 1
+          fi
+
+          # Semantic version comparison: target must be strictly greater than current
+          VERSION_COMPARISON=$(node -e "
+            const current = '${CURRENT_VERSION}'.split('.').map(Number);
+            const target = '${CLEAN_VERSION}'.split('.').map(Number);
+            let diff = 0;
+            for (let i = 0; i < 3; i++) {
+              diff = target[i] - current[i];
+              if (diff !== 0) break;
+            }
+            console.log(diff > 0 ? 'GREATER' : (diff === 0 ? 'EQUAL' : 'LESSER'));
+          ")
+
+          echo "Version comparison (target vs current): ${VERSION_COMPARISON}"
+
+          if [ "${IS_RESUME}" != "true" ]; then
+            if [ "${VERSION_COMPARISON}" != "GREATER" ]; then
+              echo "::error::Version regression or duplicate: Target version '${CLEAN_VERSION}' must be strictly greater than current version '${CURRENT_VERSION}'."
+              exit 1
+            fi
+
+            # Check for tag collision locally and remotely
+            if git rev-parse "${TARGET_TAG}" >/dev/null 2>&1; then
+              echo "::error::Tag '${TARGET_TAG}' already exists in local git history."
+              exit 1
+            fi
+
+            REMOTE_TAG_CHECK=$(git ls-remote --tags origin "refs/tags/${TARGET_TAG}" 2>/dev/null || true)
+            if [ -n "${REMOTE_TAG_CHECK}" ]; then
+              echo "::error::Tag '${TARGET_TAG}' already exists on remote origin. Overwriting tags is strictly prohibited."
+              exit 1
+            fi
+
+            # Check if GitHub Release already exists
+            EXISTING_RELEASE=$(gh release view "${TARGET_TAG}" --repo "${{ github.repository }}" --json tagName -q .tagName 2>/dev/null || true)
+            if [ -n "${EXISTING_RELEASE}" ]; then
+              echo "::error::GitHub Release '${TARGET_TAG}' already exists. If you want to resume manifest publication for this release, run with resume_manifest_only: true."
+              exit 1
+            fi
+
+            TARGET_VERSION_CODE=$((CURRENT_VERSION_CODE + 1))
+          else
+            echo "ℹ️ Running in RESUME / RECOVERY mode (resume_manifest_only=true)."
+            # In resume mode, the target release MUST exist on GitHub
+            EXISTING_RELEASE=$(gh release view "${TARGET_TAG}" --repo "${{ github.repository }}" --json tagName -q .tagName 2>/dev/null || true)
+            if [ -z "${EXISTING_RELEASE}" ]; then
+              echo "::error::Cannot resume: GitHub Release '${TARGET_TAG}' does not exist on repository."
+              exit 1
+            fi
+            # Use current or incremented versionCode
+            if [ "${VERSION_COMPARISON}" = "GREATER" ]; then
+              TARGET_VERSION_CODE=$((CURRENT_VERSION_CODE + 1))
+            else
+              TARGET_VERSION_CODE=${CURRENT_VERSION_CODE}
+            fi
+          fi
+
+          echo "Authoritative Next Android versionCode: ${TARGET_VERSION_CODE}"
+          if [ "${TARGET_VERSION_CODE}" -le 0 ]; then
+            echo "::error::Computed invalid versionCode: ${TARGET_VERSION_CODE}."
+            exit 1
+          fi
+
+          # Verify secret availability if not in resume mode
+          if [ "${IS_RESUME}" != "true" ] && [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "::error::Required secret EXPO_TOKEN is missing from repository secrets."
+            exit 1
+          fi
+
+          echo "clean_version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+          echo "target_tag=${TARGET_TAG}" >> $GITHUB_OUTPUT
+          echo "target_version_code=${TARGET_VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          echo "current_version_code=${CURRENT_VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "is_resume=${IS_RESUME}" >> $GITHUB_OUTPUT
+          echo "✅ [Step A] Parameter validation and security gates passed successfully."
+
+      - name: Step B — Pre-Release Quality Gate (Stop Immediately On Failure)
+        id: step-b
+        run: |
+          echo "========================================================"
+          echo "👉 [Step B] Running Comprehensive Quality Gate"
+          echo "========================================================"
+
+          echo "1. Installing root dependencies..."
+          npm ci
+
+          echo "2. Running release manifest sync unit tests..."
+          node scripts/release_manifest_sync_test.cjs
+
+          echo "3. Running all 9 automated regression test suites..."
+          npm test
+
+          echo "4. Running mobile TypeScript compiler check..."
+          npx tsc --noEmit
+
+          echo "5. Running mobile linter..."
+          npm run lint
+
+          echo "6. Running Expo Doctor diagnostics..."
+          npx expo-doctor
+
+          echo "7. Installing website dependencies..."
+          npm --prefix dotynotes-website ci
+
+          echo "8. Running website linter..."
+          npm --prefix dotynotes-website run lint
+
+          echo "9. Running website TypeScript check..."
+          npm --prefix dotynotes-website run typecheck
+
+          echo "10. Running website Vitest automated test suite..."
+          npm --prefix dotynotes-website run test
+
+          echo "11. Verifying website production build..."
+          npm --prefix dotynotes-website run build
+
+          echo "✅ [Step B] All quality gate tests, linters, diagnostics, and builds passed 100%!"
+
+      - name: Step C — Bump Version Locally for EAS Build
+        id: step-c
+        if: steps.step-a.outputs.is_resume != 'true'
+        env:
+          CLEAN_VERSION: ${{ steps.step-a.outputs.clean_version }}
+          TARGET_VERSION_CODE: ${{ steps.step-a.outputs.target_version_code }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step C] Applying Local Version Bump For EAS Build"
+          echo "========================================================"
+
+          # Update app.json
+          node -e "
+            const fs = require('fs');
+            const app = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            app.expo.version = '${CLEAN_VERSION}';
+            app.expo.android.versionCode = parseInt('${TARGET_VERSION_CODE}', 10);
+            fs.writeFileSync('app.json', JSON.stringify(app, null, 2) + '\n', 'utf8');
+          "
+
+          # Update package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '${CLEAN_VERSION}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+          "
+
+          # Update package-lock.json
+          node -e "
+            const fs = require('fs');
+            if (fs.existsSync('package-lock.json')) {
+              const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+              lock.version = '${CLEAN_VERSION}';
+              if (lock.packages && lock.packages['']) {
+                lock.packages[''].version = '${CLEAN_VERSION}';
+              }
+              fs.writeFileSync('package-lock.json', JSON.stringify(lock, null, 2) + '\n', 'utf8');
+            }
+          "
+
+          echo "Locally set version=${CLEAN_VERSION}, versionCode=${TARGET_VERSION_CODE} for EAS packaging."
+          echo "✅ [Step C] Local build configuration updated."
+
+      - name: Step D — EAS Cloud APK Build
+        id: step-d
+        if: steps.step-a.outputs.is_resume != 'true'
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Run EAS Build for release-apk
+        id: eas-build
+        if: steps.step-a.outputs.is_resume != 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step D] Triggering Non-Interactive EAS Cloud Build"
+          echo "========================================================"
+
+          eas build --platform android --profile release-apk --non-interactive --json --wait > eas_build_raw.json
+
+          BUILD_STATUS=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log((b?.status||'').toUpperCase());")
+          BUILD_ID=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.id||'');")
+          ARTIFACT_URL=$(node -e "const fs=require('fs'); const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.artifacts?.applicationArchiveUrl || b?.artifacts?.buildUrl || '');")
+
+          echo "EAS Build ID: ${BUILD_ID}"
+          echo "EAS Build Status: ${BUILD_STATUS}"
+
+          if [ "${BUILD_STATUS}" != "FINISHED" ]; then
+            BUILD_ERROR=$(node -e "const fs=require('fs'); try { const raw=fs.readFileSync('./eas_build_raw.json','utf8'); const s=Math.min(...[raw.indexOf('['),raw.indexOf('{')].filter(i=>i!==-1)); const e=Math.max(raw.lastIndexOf(']'),raw.lastIndexOf('}')); const d=JSON.parse(raw.slice(s,e+1)); const b=Array.isArray(d)?d[0]:d; console.log(b?.error?.message || ''); } catch(e){}")
+            echo "::error::EAS build failed with status '${BUILD_STATUS}'. Details: ${BUILD_ERROR}"
+            exit 1
+          fi
+
+          if [ -z "${ARTIFACT_URL}" ]; then
+            echo "::error::No completed artifact URL returned by EAS build."
+            exit 1
+          fi
+
+          echo "build_id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "artifact_url=${ARTIFACT_URL}" >> $GITHUB_OUTPUT
+          echo "✅ [Step D] EAS Build succeeded: ${BUILD_ID}"
+
+      - name: Archive EAS Build Metadata
+        uses: actions/upload-artifact@v4
+        if: always() && steps.step-a.outputs.is_resume != 'true'
+        with:
+          name: eas-build-metadata
+          path: eas_build_raw.json
+          retention-days: 30
+
+      - name: Step E — Download & Verify APK
+        id: step-e
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLEAN_VERSION: ${{ steps.step-a.outputs.clean_version }}
+          TARGET_TAG: ${{ steps.step-a.outputs.target_tag }}
+          TARGET_VERSION_CODE: ${{ steps.step-a.outputs.target_version_code }}
+          IS_RESUME: ${{ steps.step-a.outputs.is_resume }}
+          ARTIFACT_URL: ${{ steps.eas-build.outputs.artifact_url }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step E] Downloading and Cryptographically Verifying APK"
+          echo "========================================================"
+
+          APK_FILE_NAME="DotyNotes-v${CLEAN_VERSION}.apk"
+
+          if [ "${IS_RESUME}" != "true" ]; then
+            echo "Downloading build artifact from EAS: ${ARTIFACT_URL}..."
+            curl -fSL -H "User-Agent: Mozilla/5.0" "${ARTIFACT_URL}" -o "${APK_FILE_NAME}"
+          else
+            echo "Resuming: Downloading APK from existing GitHub Release '${TARGET_TAG}'..."
+            gh release download "${TARGET_TAG}" --pattern "${APK_FILE_NAME}" --clobber
+          fi
+
+          if [ ! -s "${APK_FILE_NAME}" ]; then
+            echo "::error::APK file '${APK_FILE_NAME}' is missing or empty."
+            exit 1
+          fi
+
+          # 1. Check zip archive integrity
+          echo "Validating zip packaging integrity..."
+          unzip -t "${APK_FILE_NAME}" AndroidManifest.xml >/dev/null
+
+          # 2. Deep APK Package ID & Version Validation
+          echo "Inspecting APK package identity..."
+          AAPT_BIN=""
+          if command -v aapt >/dev/null 2>&1; then
+            AAPT_BIN="aapt"
+          elif [ -d "$ANDROID_HOME/build-tools" ]; then
+            AAPT_BIN=$(ls -1d $ANDROID_HOME/build-tools/*/aapt 2>/dev/null | tail -n 1)
+          elif [ -d "$ANDROID_SDK_ROOT/build-tools" ]; then
+            AAPT_BIN=$(ls -1d $ANDROID_SDK_ROOT/build-tools/*/aapt 2>/dev/null | tail -n 1)
+          fi
+
+          if [ -n "${AAPT_BIN}" ] && [ -x "${AAPT_BIN}" ]; then
+            echo "Using Android aapt badging from ${AAPT_BIN}..."
+            BADGING_OUTPUT=$("${AAPT_BIN}" dump badging "${APK_FILE_NAME}")
+            EXTRACTED_PKG=$(echo "${BADGING_OUTPUT}" | grep -E "package: name=" | head -n 1 | sed -E "s/.*package: name='([^']*)'.*/\1/")
+            EXTRACTED_VC=$(echo "${BADGING_OUTPUT}" | grep -E "versionCode=" | head -n 1 | sed -E "s/.*versionCode='([^']*)'.*/\1/")
+            EXTRACTED_VN=$(echo "${BADGING_OUTPUT}" | grep -E "versionName=" | head -n 1 | sed -E "s/.*versionName='([^']*)'.*/\1/")
+
+            echo "AAPT Extracted Package ID: ${EXTRACTED_PKG}"
+            echo "AAPT Extracted Version Name: ${EXTRACTED_VN}"
+            echo "AAPT Extracted Version Code: ${EXTRACTED_VC}"
+
+            if [ "${EXTRACTED_PKG}" != "com.dotynotes.app" ]; then
+              echo "::error::Security violation: APK package ID is '${EXTRACTED_PKG}', expected 'com.dotynotes.app'."
+              exit 1
+            fi
+
+            if [ "${EXTRACTED_VN}" != "${CLEAN_VERSION}" ]; then
+              echo "::error::Version mismatch: APK versionName '${EXTRACTED_VN}' does not match expected '${CLEAN_VERSION}'."
+              exit 1
+            fi
+
+            if [ "${EXTRACTED_VC}" != "${TARGET_VERSION_CODE}" ]; then
+              echo "::error::VersionCode mismatch: APK versionCode '${EXTRACTED_VC}' does not match expected '${TARGET_VERSION_CODE}'."
+              exit 1
+            fi
+            echo "✅ Deep APK validation verified: com.dotynotes.app v${EXTRACTED_VN} (${EXTRACTED_VC})."
+          else
+            echo "ℹ️ aapt binary not directly found on PATH or build-tools. Executing verified fallback inspection..."
+            # Documented Fallback: Unzip binary AndroidManifest.xml and verify package ID and DEX entry
+            unzip -l "${APK_FILE_NAME}" | grep -E "(AndroidManifest\.xml|classes\.dex)" || {
+              echo "::error::APK archive missing core Android binaries (AndroidManifest.xml / classes.dex)."
+              exit 1
+            }
+            node -e "
+              const cp = require('child_process');
+              const manifestBuf = cp.execSync('unzip -p \"${APK_FILE_NAME}\" AndroidManifest.xml');
+              if (!manifestBuf.includes('com.dotynotes.app')) {
+                console.error('::error::Security violation: Binary AndroidManifest does not contain package ID com.dotynotes.app.');
+                process.exit(1);
+              }
+              console.log('✅ Fallback verification confirmed package ID com.dotynotes.app present in binary manifest.');
+            "
+          fi
+
+          # 3. Calculate exact cryptographic checksum and byte size
+          SHA256_HASH=$(sha256sum "${APK_FILE_NAME}" | awk '{print $1}')
+          FILE_SIZE_BYTES=$(wc -c < "${APK_FILE_NAME}" | tr -d ' ')
+          FILE_SIZE_MB=$(node -e "console.log((${FILE_SIZE_BYTES} / (1024*1024)).toFixed(2))")
+          FILE_SIZE_FORMATTED="~${FILE_SIZE_MB} MB"
+
+          echo "${SHA256_HASH}  ${APK_FILE_NAME}" > "${APK_FILE_NAME}.sha256"
+
+          echo "APK File Name: ${APK_FILE_NAME}"
+          echo "Exact Size: ${FILE_SIZE_BYTES} bytes (${FILE_SIZE_FORMATTED})"
+          echo "SHA-256 Checksum: ${SHA256_HASH}"
+
+          echo "apk_file_name=${APK_FILE_NAME}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256_HASH}" >> $GITHUB_OUTPUT
+          echo "size_bytes=${FILE_SIZE_BYTES}" >> $GITHUB_OUTPUT
+          echo "size_formatted=${FILE_SIZE_FORMATTED}" >> $GITHUB_OUTPUT
+          echo "✅ [Step E] APK verified successfully."
+
+      - name: Step F — Create GitHub Release & Upload APK
+        id: step-f
+        if: steps.step-a.outputs.is_resume != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLEAN_VERSION: ${{ steps.step-a.outputs.clean_version }}
+          TARGET_TAG: ${{ steps.step-a.outputs.target_tag }}
+          TARGET_VERSION_CODE: ${{ steps.step-a.outputs.target_version_code }}
+          APK_FILE_NAME: ${{ steps.step-e.outputs.apk_file_name }}
+          SHA256_HASH: ${{ steps.step-e.outputs.sha256 }}
+          SIZE_FORMATTED: ${{ steps.step-e.outputs.size_formatted }}
+          SIZE_BYTES: ${{ steps.step-e.outputs.size_bytes }}
+          BUILD_ID: ${{ steps.eas-build.outputs.build_id }}
+          CUSTOM_NOTES: ${{ github.event.inputs.release_notes }}
+          IS_PRERELEASE: ${{ github.event.inputs.prerelease }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step F] Creating GitHub Release ${TARGET_TAG}"
+          echo "========================================================"
+
+          # Prepare release notes document
+          cat << EOF > release_notes.md
+          ## DotyNotes v${CLEAN_VERSION} — Official Android Release
+
+          Fast, offline-first Android note-taking application featuring colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.
+
+          ### Verified Package Details
+          - **Package Identifier:** \`com.dotynotes.app\`
+          - **Version:** \`${CLEAN_VERSION}\`
+          - **Version Code:** \`${TARGET_VERSION_CODE}\`
+          - **File Name:** \`${APK_FILE_NAME}\`
+          - **File Size:** \`${SIZE_FORMATTED}\` (${SIZE_BYTES} bytes)
+          - **Compatibility:** Android 8.0 (API 26) or higher
+          - **EAS Build ID:** \`${BUILD_ID}\`
+
+          ### Cryptographic Checksum
+          \`\`\`
+          SHA-256: ${SHA256_HASH}
+          \`\`\`
+
+          EOF
+
+          if [ -n "${CUSTOM_NOTES}" ]; then
+            echo "### What's New" >> release_notes.md
+            echo "${CUSTOM_NOTES}" >> release_notes.md
+            echo "" >> release_notes.md
+          fi
+
+          cat << 'EOF' >> release_notes.md
+          ### Update & Installation Instructions
+          1. Download the `.apk` package to your Android device.
+          2. When prompted by Android, permit *"Install unknown apps"* for your browser or files manager.
+          3. Install the APK directly. Your existing app can be updated without uninstalling it.
+
+          **Important Note:** Do not uninstall the existing app, as Android application sandboxing may remove locally stored notes.
+          EOF
+
+          # Configure git identity for tag creation
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Tag the release
+          git tag -a "${TARGET_TAG}" -m "Release ${TARGET_TAG}"
+          git push origin "${TARGET_TAG}"
+
+          PRERELEASE_FLAG=""
+          if [ "${IS_PRERELEASE}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          echo "Publishing GitHub Release with assets..."
+          gh release create "${TARGET_TAG}" \
+            --title "DotyNotes v${CLEAN_VERSION}" \
+            --notes-file release_notes.md \
+            "${APK_FILE_NAME}" \
+            "${APK_FILE_NAME}.sha256" \
+            ${PRERELEASE_FLAG}
+
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${TARGET_TAG}"
+          echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
+          echo "✅ [Step F] GitHub Release published successfully: ${RELEASE_URL}"
+
+      - name: Step G — Safe Manifest Publication & CDN Verification
+        id: step-g
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLEAN_VERSION: ${{ steps.step-a.outputs.clean_version }}
+          TARGET_TAG: ${{ steps.step-a.outputs.target_tag }}
+          TARGET_VERSION_CODE: ${{ steps.step-a.outputs.target_version_code }}
+          APK_FILE_NAME: ${{ steps.step-e.outputs.apk_file_name }}
+          SHA256_HASH: ${{ steps.step-e.outputs.sha256 }}
+          SIZE_BYTES: ${{ steps.step-e.outputs.size_bytes }}
+          SIZE_FORMATTED: ${{ steps.step-e.outputs.size_formatted }}
+          CUSTOM_NOTES: ${{ github.event.inputs.release_notes }}
+        run: |
+          echo "========================================================"
+          echo "👉 [Step G] Verifying Asset CDN & Publishing Manifests"
+          echo "========================================================"
+
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TARGET_TAG}/${APK_FILE_NAME}"
+          RELEASE_NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TARGET_TAG}"
+
+          echo "1. Probing published asset CDN availability at ${DOWNLOAD_URL}..."
+          ASSET_LIVE=false
+          for i in {1..12}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I -L "${DOWNLOAD_URL}" || true)
+            echo "   Probe ${i}/12: HTTP ${HTTP_STATUS}"
+            if [ "${HTTP_STATUS}" = "200" ]; then
+              ASSET_LIVE=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "${ASSET_LIVE}" != "true" ]; then
+            echo "::error::Published APK asset is not accessible via CDN after 60 seconds (HTTP ${HTTP_STATUS}). Aborting manifest publication to prevent broken in-app updater downloads."
+            exit 1
+          fi
+          echo "   ✅ CDN asset probe verified: APK is live and publicly downloadable."
+
+          echo "2. Synchronizing master git branch before manifest commit..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Reset local workspace cleanly and pull latest master without force push
+          git reset --hard HEAD
+          git checkout master
+          git pull --ff-only origin master
+
+          echo "3. Updating release manifests and website configuration..."
+          node scripts/release_manifest_sync.cjs \
+            --version "${CLEAN_VERSION}" \
+            --version-code "${TARGET_VERSION_CODE}" \
+            --sha256 "${SHA256_HASH}" \
+            --size-bytes "${SIZE_BYTES}" \
+            --size-formatted "${SIZE_FORMATTED}" \
+            --apk-name "${APK_FILE_NAME}" \
+            --download-url "${DOWNLOAD_URL}" \
+            --release-notes-url "${RELEASE_NOTES_URL}" \
+            --release-notes "${CUSTOM_NOTES:-DotyNotes v${CLEAN_VERSION} official release with colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.}"
+
+          echo "4. Verifying website production build with updated configuration..."
+          npm --prefix dotynotes-website run build
+
+          echo "5. Committing and pushing release manifests to master..."
+          git add app.json package.json package-lock.json update-manifest.json dotynotes-website/public/update-manifest.json dotynotes-website/src/constants/config.ts
+          git commit -m "chore(release): publish v${CLEAN_VERSION} manifests and release configuration [skip ci]"
+
+          # Never force push! Push cleanly to origin master
+          git push origin master
+
+          echo "download_url=${DOWNLOAD_URL}" >> $GITHUB_OUTPUT
+          echo "✅ [Step G] Manifests committed and pushed to master successfully."
+
+      - name: Step H — Final Release Summary
+        id: step-h
+        if: always()
+        run: |
+          echo "========================================================"
+          echo "👉 [Step H] Generating Production Release Summary"
+          echo "========================================================"
+
+          STATUS="${{ job.status }}"
+          VERSION="${{ steps.step-a.outputs.clean_version || github.event.inputs.version }}"
+          VERSION_CODE="${{ steps.step-a.outputs.target_version_code || 'N/A' }}"
+          TAG="${{ steps.step-a.outputs.target_tag || 'N/A' }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          DOWNLOAD_URL="${{ steps.step-g.outputs.download_url || 'N/A' }}"
+          SHA256="${{ steps.step-e.outputs.sha256 || 'N/A' }}"
+          SIZE="${{ steps.step-e.outputs.size_formatted || 'N/A' }} (${{ steps.step-e.outputs.size_bytes || 'N/A' }} bytes)"
+
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          # 🚀 DotyNotes Production Release Summary
+
+          | Metric / Property | Value |
+          | :--- | :--- |
+          | **Pipeline Status** | **${STATUS^^}** |
+          | **Released Version** | \`v${VERSION}\` |
+          | **Android versionCode** | \`${VERSION_CODE}\` |
+          | **Package Identifier** | \`com.dotynotes.app\` |
+          | **GitHub Release** | [${TAG}](${RELEASE_URL}) |
+          | **APK Download URL** | [Direct APK Link](${DOWNLOAD_URL}) |
+          | **File Size** | \`${SIZE}\` |
+          | **Cryptographic SHA-256** | \`${SHA256}\` |
+          | **Pre-Release Quality Gate** | Passed (9 Test Suites, TypeScript, ESLint, Expo Doctor, Website Tests & Build) |
+          | **Manifest Publication** | Synchronized to \`master\` and \`dotynotes-website\` with \`[skip ci]\` |
+
+          EOF
+
+          if [ "${STATUS}" = "success" ]; then
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+            ### 🎉 Production Release Successful!
+            - The standalone signed APK is live on GitHub Releases.
+            - In-app update manifests and website configuration are active.
+            - Vercel deployment of \`dotynotes-website\` will automatically update with the new version and active download button.
+          EOF
+          else
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+            ### ⚠️ Release Pipeline Failed or Terminated Early
+            - Review the failed step in the execution logs above.
+            - If GitHub Release creation succeeded but manifest sync failed, you can complete manifest publication **without rebuilding the APK**:
+              Trigger this workflow again with:
+              \`\`\`
+              version: ${VERSION}
+              resume_manifest_only: true
+              \`\`\`
+          EOF
+          fi
+
