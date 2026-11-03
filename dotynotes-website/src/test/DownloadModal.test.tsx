@@ -28,33 +28,44 @@ describe('DownloadModal Component', () => {
   });
 
   it('displays preparation status, disabled Download APK button, and functional Cancel button when release is unavailable', () => {
-    const handleClose = vi.fn();
-    render(<DownloadModal isOpen={true} onClose={handleClose} />);
+    const originalRelease = { ...APP_CONFIG.release };
+    Object.assign(APP_CONFIG.release, {
+      isAvailable: false,
+      downloadUrl: null,
+      sha256Checksum: null,
+    });
 
-    // Shows Release in Preparation notice
-    expect(screen.getByText(/release in preparation/i)).toBeInTheDocument();
-    expect(screen.getByText(/signed standalone apk build has been generated/i)).toBeInTheDocument();
+    try {
+      const handleClose = vi.fn();
+      render(<DownloadModal isOpen={true} onClose={handleClose} />);
 
-    // Primary Download APK button is disabled
-    const downloadBtn = screen.getByRole('button', { name: /download apk/i });
-    expect(downloadBtn).toBeInTheDocument();
-    expect(downloadBtn).toBeDisabled();
-    expect(downloadBtn).toHaveAttribute('aria-disabled', 'true');
+      // Shows Release in Preparation notice
+      expect(screen.getByText(/release in preparation/i)).toBeInTheDocument();
+      expect(screen.getByText(/signed standalone apk build has been generated/i)).toBeInTheDocument();
 
-    // Does NOT navigate to GitHub repository as primary action
-    expect(screen.queryByRole('link', { name: /view repository on github/i })).not.toBeInTheDocument();
+      // Primary Download APK button is disabled
+      const downloadBtn = screen.getByRole('button', { name: /download apk/i });
+      expect(downloadBtn).toBeInTheDocument();
+      expect(downloadBtn).toBeDisabled();
+      expect(downloadBtn).toHaveAttribute('aria-disabled', 'true');
 
-    // Cancel button is active and functional
-    const cancelBtn = screen.getByRole('button', { name: /^cancel$/i });
-    expect(cancelBtn).toBeInTheDocument();
-    expect(cancelBtn).not.toBeDisabled();
+      // Does NOT navigate to GitHub repository as primary action
+      expect(screen.queryByRole('link', { name: /view repository on github/i })).not.toBeInTheDocument();
 
-    fireEvent.click(cancelBtn);
-    expect(handleClose).toHaveBeenCalledTimes(1);
+      // Cancel button is active and functional
+      const cancelBtn = screen.getByRole('button', { name: /^cancel$/i });
+      expect(cancelBtn).toBeInTheDocument();
+      expect(cancelBtn).not.toBeDisabled();
 
-    // Shows checksum publication notice instead of copy button
-    expect(screen.getByText(/available upon official build publication/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /copy sha-256 checksum/i })).not.toBeInTheDocument();
+      fireEvent.click(cancelBtn);
+      expect(handleClose).toHaveBeenCalledTimes(1);
+
+      // Shows checksum publication notice instead of copy button
+      expect(screen.getByText(/available upon official build publication/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /copy sha-256 checksum/i })).not.toBeInTheDocument();
+    } finally {
+      Object.assign(APP_CONFIG.release, originalRelease);
+    }
   });
 
   it('displays enabled Download APK link and copyable checksum when release is available', async () => {
