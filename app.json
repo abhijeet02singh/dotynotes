@@ -2,30 +2,20 @@
   "expo": {
     "name": "DotyNotes",
     "slug": "dotynotes",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#FFF8FA"
-    },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "package": "com.dotynotes.app",
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "splash": {
-        "image": "./assets/splash-icon.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#FFF8FA"
       },
       "permissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",

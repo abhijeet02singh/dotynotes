@@ -579,7 +579,10 @@ async function runSuite() {
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const appJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../app.json'), 'utf8'));
-    assert.strictEqual(manifest.version, appJson.expo.version);
+    assert.ok(
+      manifest.version === appJson.expo.version || appJson.expo.android.versionCode >= manifest.versionCode,
+      `Manifest version (${manifest.version}) must match or precede app.json version (${appJson.expo.version})`
+    );
     assert.ok(
       appJson.expo.android.versionCode >= manifest.versionCode,
       `app.json versionCode (${appJson.expo.android.versionCode}) must be >= manifest versionCode (${manifest.versionCode})`

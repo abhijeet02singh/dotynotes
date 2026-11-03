@@ -538,16 +538,19 @@ console.log('   ✅ PASS: Unique ID generation ensures no duplicates even under 
 // ----------------------------------------------------------------
 console.log('👉 [GROUP 7] Verifying Production Polish & Hardening Configurations');
 
-// 7.1 Splash Screen Configuration in app.json
+// 7.1 Splash Screen Configuration in app.json (Expo SDK 57 compliance)
 const appConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '../app.json'), 'utf8'));
-assert.ok(appConfig.expo.splash, 'app.json must define expo.splash configuration');
-assert.strictEqual(appConfig.expo.splash.image, './assets/splash-icon.png', 'Splash image must point to ./assets/splash-icon.png');
-assert.strictEqual(appConfig.expo.splash.resizeMode, 'contain', 'Splash resizeMode must be contain to prevent distortion/cropping');
-assert.strictEqual(appConfig.expo.splash.backgroundColor, '#FFF8FA', 'Splash background must match Light + Rose Pink theme (#FFF8FA)');
-assert.ok(appConfig.expo.android.splash, 'app.json must define expo.android.splash configuration');
-assert.strictEqual(appConfig.expo.android.splash.resizeMode, 'contain', 'Android splash resizeMode must be contain');
-assert.strictEqual(appConfig.expo.android.splash.backgroundColor, '#FFF8FA', 'Android splash background must be #FFF8FA');
-console.log('   ✅ PASS 7.1: app.json defines splash screen with contain mode & Light Rose Pink background (#FFF8FA)');
+assert.strictEqual(appConfig.expo.splash, undefined, 'expo.splash must not be defined in app.json to comply with Expo SDK 57 schema');
+assert.strictEqual(appConfig.expo.android?.splash, undefined, 'expo.android.splash must not be defined to comply with Expo SDK 57 schema');
+
+// Verify native Android splash screen assets and theme configuration are preserved
+assert.ok(fs.existsSync(path.join(__dirname, '../assets/splash-icon.png')), 'assets/splash-icon.png must exist');
+const stylesXml = fs.readFileSync(path.join(__dirname, '../android/app/src/main/res/values/styles.xml'), 'utf8');
+assert.ok(stylesXml.includes('Theme.App.SplashScreen'), 'styles.xml must define Theme.App.SplashScreen');
+assert.ok(stylesXml.includes('@drawable/splashscreen_logo'), 'styles.xml must point to @drawable/splashscreen_logo');
+const androidManifest = fs.readFileSync(path.join(__dirname, '../android/app/src/main/AndroidManifest.xml'), 'utf8');
+assert.ok(androidManifest.includes('android:theme="@style/Theme.App.SplashScreen"'), 'AndroidManifest.xml must set Theme.App.SplashScreen on MainActivity');
+console.log('   ✅ PASS 7.1: Expo SDK 57 splash configuration and native splash theme verified');
 
 // 7.2 React Error Boundary in App.js and src/components/ErrorBoundary.js
 const appSource = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
