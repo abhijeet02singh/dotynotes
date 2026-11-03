@@ -1,9 +1,8 @@
 name: Android Release
 
 'on':
-  push:
-    tags:
-      - 'v*'
+  # Note: Automated production releases are managed via .github/workflows/production-release.yml.
+  # Manual dispatch remains available for standalone ad-hoc APK generation.
   workflow_dispatch:
     inputs:
       version:

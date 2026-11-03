@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 
 /**
- * DotyNotes Version Manager
+ * DotyNotes Version & Release Manager
  *
- * Centralized script to manage and synchronize semantic versioning
- * and Android versionCode across:
+ * Centralized script to manage semantic versioning, monotonic Android versionCode,
+ * pre-release quality checks, and local release orchestration for:
  *  - app.json (expo.version and expo.android.versionCode)
  *  - package.json (version)
  *  - package-lock.json (version and packages[""].version)
- *  - dotynotes-website/src/constants/config.ts (APP_CONFIG.release.version, versionCode, apkFileName)
+ *  - dotynotes-website/src/constants/config.ts (APP_CONFIG.release)
+ *  - update-manifest.json & dotynotes-website/public/update-manifest.json
+ *
+ * Provides:
+ *  - npm run release -- <version|patch|minor|major>
+ *  - npm run release:dry-run -- <version|patch|minor|major>
+ *  - npm run version:check
+ *  - npm run version:bump
  */
 
 const fs = require('fs');
@@ -22,6 +29,10 @@ const PACKAGE_LOCK_PATH = path.join(REPO_ROOT, 'package-lock.json');
 const WEBSITE_CONFIG_PATH = path.join(REPO_ROOT, 'dotynotes-website', 'src', 'constants', 'config.ts');
 const ROOT_MANIFEST_PATH = path.join(REPO_ROOT, 'update-manifest.json');
 const WEBSITE_MANIFEST_PATH = path.join(REPO_ROOT, 'dotynotes-website', 'public', 'update-manifest.json');
+
+const REPO_OWNER = 'abhijeet02singh';
+const REPO_NAME = 'dotynotes';
+const WORKFLOW_NAME = 'production-release.yml';
 
 const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
@@ -56,9 +67,12 @@ function readWebsiteConfig() {
 }
 
 function parseSemver(versionStr) {
+  if (!versionStr || typeof versionStr !== 'string') {
+    throw new Error(`Invalid version: '${versionStr}'. Version must be a non-empty string.`);
+  }
   const clean = versionStr.replace(/^v/, '');
   if (!SEMVER_REGEX.test(clean)) {
-    throw new Error(`Invalid semver: '${versionStr}'. Must follow MAJOR.MINOR.PATCH (e.g. 1.0.0).`);
+    throw new Error(`Invalid semver: '${versionStr}'. Must follow MAJOR.MINOR.PATCH format (e.g. 1.0.4).`);
   }
   const [major, minor, patch] = clean.split('.').map(n => parseInt(n, 10));
   return { major, minor, patch, formatted: clean };
@@ -70,6 +84,45 @@ function compareSemver(v1, v2) {
   if (p1.major !== p2.major) return p1.major - p2.major;
   if (p1.minor !== p2.minor) return p1.minor - p2.minor;
   return p1.patch - p2.patch;
+}
+
+function calculateNextVersionAndCode(currentVersion, currentCode, targetInput = 'patch') {
+  const parsed = parseSemver(currentVersion);
+  let nextMajor = parsed.major;
+  let nextMinor = parsed.minor;
+  let nextPatch = parsed.patch;
+
+  const normalized = (targetInput || 'patch').trim().toLowerCase();
+
+  if (normalized === 'patch') {
+    nextPatch += 1;
+  } else if (normalized === 'minor') {
+    nextMinor += 1;
+    nextPatch = 0;
+  } else if (normalized === 'major') {
+    nextMajor += 1;
+    nextMinor = 0;
+    nextPatch = 0;
+  } else if (SEMVER_REGEX.test(normalized.replace(/^v/, ''))) {
+    const custom = parseSemver(normalized);
+    if (compareSemver(custom.formatted, currentVersion) <= 0) {
+      throw new Error(`Target version '${custom.formatted}' must be strictly greater than current version '${currentVersion}'.`);
+    }
+    nextMajor = custom.major;
+    nextMinor = custom.minor;
+    nextPatch = custom.patch;
+  } else {
+    throw new Error(`Invalid version or bump type: '${targetInput}'. Must be 'patch', 'minor', 'major', or an explicit SemVer 'X.Y.Z'.`);
+  }
+
+  const nextVersion = `${nextMajor}.${nextMinor}.${nextPatch}`;
+  const nextCode = (parseInt(currentCode, 10) || 1) + 1;
+
+  return {
+    nextVersion,
+    nextCode,
+    targetTag: `v${nextVersion}`,
+  };
 }
 
 function getStatus() {
@@ -142,37 +195,6 @@ function applyVersions(newVersion, newVersionCode) {
     fs.writeFileSync(PACKAGE_LOCK_PATH, JSON.stringify(lockJson, null, 2) + '\n', 'utf-8');
     console.log(`✓ Updated package-lock.json: version = ${newVersion}`);
   }
-
-  // 4. Update dotynotes-website/src/constants/config.ts
-  const webConfig = readWebsiteConfig();
-  let updatedConfig = webConfig.raw
-    .replace(/version:\s*'([0-9]+\.[0-9]+\.[0-9]+)'/, `version: '${newVersion}'`)
-    .replace(/versionCode:\s*([0-9]+)/, `versionCode: ${newVersionCode}`)
-    .replace(/apkFileName:\s*'DotyNotes-v([0-9]+\.[0-9]+\.[0-9]+)\.apk'/, `apkFileName: 'DotyNotes-v${newVersion}.apk'`);
-
-  fs.writeFileSync(WEBSITE_CONFIG_PATH, updatedConfig, 'utf-8');
-  console.log(`✓ Updated dotynotes-website config: version = ${newVersion}, versionCode = ${newVersionCode}`);
-
-  // 5. Update update-manifest.json files (both root and website public)
-  const manifestData = {
-    version: newVersion,
-    versionCode: newVersionCode,
-    releaseDate: new Date().toISOString().split('T')[0],
-    minAndroidVersion: 'Android 8.0 (API 26) or higher',
-    targetAndroidVersion: 'Android 14 / 15 (API 34/35)',
-    packageId: 'com.dotynotes.app',
-    apkFileName: `DotyNotes-v${newVersion}.apk`,
-    downloadUrl: `https://github.com/abhijeet02singh/dotynotes/releases/download/v${newVersion}/DotyNotes-v${newVersion}.apk`,
-    fileSizeBytes: 77385920,
-    fileSizeFormatted: '~73.8 MB',
-    sha256: null,
-    releaseNotes: `DotyNotes v${newVersion} official release with colorful pastel sticky notes, rich-text formatting, local reminders, and the signature native Android Floating Dot Quick Pad companion.`,
-    releaseNotesUrl: `https://github.com/abhijeet02singh/dotynotes/releases/tag/v${newVersion}`,
-  };
-
-  fs.writeFileSync(ROOT_MANIFEST_PATH, JSON.stringify(manifestData, null, 2) + '\n', 'utf-8');
-  fs.writeFileSync(WEBSITE_MANIFEST_PATH, JSON.stringify(manifestData, null, 2) + '\n', 'utf-8');
-  console.log(`✓ Updated update-manifest.json files: version = ${newVersion}, versionCode = ${newVersionCode}`);
 }
 
 function bumpVersion(bumpType) {
@@ -181,135 +203,154 @@ function bumpVersion(bumpType) {
     throw new Error('Cannot bump: could not read current version or versionCode.');
   }
 
-  const parsed = parseSemver(appVersion);
-  let nextMajor = parsed.major;
-  let nextMinor = parsed.minor;
-  let nextPatch = parsed.patch;
+  const { nextVersion, nextCode } = calculateNextVersionAndCode(appVersion, versionCode, bumpType);
 
-  if (bumpType === 'patch') {
-    nextPatch += 1;
-  } else if (bumpType === 'minor') {
-    nextMinor += 1;
-    nextPatch = 0;
-  } else if (bumpType === 'major') {
-    nextMajor += 1;
-    nextMinor = 0;
-    nextPatch = 0;
-  } else if (SEMVER_REGEX.test(bumpType.replace(/^v/, ''))) {
-    const custom = parseSemver(bumpType);
-    if (compareSemver(custom.formatted, appVersion) <= 0) {
-      throw new Error(`Custom version '${custom.formatted}' must be strictly greater than current version '${appVersion}'.`);
-    }
-    nextMajor = custom.major;
-    nextMinor = custom.minor;
-    nextPatch = custom.patch;
-  } else {
-    throw new Error(`Unknown bump type: '${bumpType}'. Must be 'patch', 'minor', 'major', or an explicit 'X.Y.Z'.`);
-  }
+  console.log(`\nBumping version: ${appVersion} -> ${nextVersion}`);
+  console.log(`Bumping versionCode: ${versionCode} -> ${nextCode}\n`);
 
-  const newVersion = `${nextMajor}.${nextMinor}.${nextPatch}`;
-  const newVersionCode = versionCode + 1;
-
-  console.log(`\nBumping version: ${appVersion} -> ${newVersion}`);
-  console.log(`Bumping versionCode: ${versionCode} -> ${newVersionCode}\n`);
-
-  applyVersions(newVersion, newVersionCode);
+  applyVersions(nextVersion, nextCode);
   console.log('\nVersion bump completed successfully.');
 }
 
-function release(bumpType = 'patch', options = {}) {
-  const isDryRun = options.dryRun || false;
-  console.log('\n========================================');
-  console.log(`DotyNotes Safe Release Automation (${bumpType.toUpperCase()})`);
-  if (isDryRun) {
-    console.log('   [DRY RUN MODE - No files or git state will be modified]');
-  }
-  console.log('========================================\n');
+async function dispatchWorkflow(version, options = {}) {
+  const workflowFile = WORKFLOW_NAME;
+  const targetTag = `v${version}`;
 
-  // Step 1: Verify working tree is clean
-  console.log('👉 [Step 1/8] Checking git working tree...');
-  let gitStatus;
+  // 1. Try GitHub CLI (gh) if available
+  let ghAvailable = false;
+  try {
+    execSync('gh --version', { stdio: 'ignore' });
+    ghAvailable = true;
+  } catch (_) {}
+
+  if (ghAvailable) {
+    console.log('👉 Triggering production release via GitHub CLI (gh)...');
+    let ghCmd = `gh workflow run ${workflowFile} -f version="${version}"`;
+    if (options.notes) {
+      ghCmd += ` -f release_notes="${options.notes.replace(/"/g, '\\"')}"`;
+    }
+    if (options.prerelease) {
+      ghCmd += ` -f prerelease=true`;
+    }
+    execSync(ghCmd, { cwd: REPO_ROOT, stdio: 'inherit' });
+    console.log('\n✅ Successfully triggered production-release.yml via GitHub CLI!');
+    return { method: 'gh', success: true };
+  }
+
+  // 2. Try GitHub REST API if GITHUB_TOKEN or GH_TOKEN is present
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) {
+    console.log('👉 Triggering production release via GitHub Actions REST API...');
+    const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${workflowFile}/dispatches`;
+    const payload = {
+      ref: 'master',
+      inputs: {
+        version,
+        release_notes: options.notes || '',
+        prerelease: options.prerelease || false,
+      },
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'DotyNotes-Release-Manager',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.status === 204) {
+      console.log('\n✅ Successfully triggered production-release.yml via GitHub REST API (HTTP 204 No Content)!');
+      return { method: 'api', success: true };
+    } else {
+      const errText = await res.text();
+      throw new Error(`GitHub API returned HTTP ${res.status}: ${errText}`);
+    }
+  }
+
+  // 3. Fallback: Print clean, one-click manual release URL and instructions
+  console.log('\nℹ️ Neither GitHub CLI (`gh`) nor GITHUB_TOKEN environment variable was found.');
+  console.log('To trigger the release workflow automatically, you can either:');
+  console.log('  1. Set a GitHub token and run again:');
+  console.log(`     $env:GITHUB_TOKEN="your_personal_access_token"; npm run release -- ${version}`);
+  console.log('  2. Install GitHub CLI: winget install GitHub.cli && gh auth login');
+  console.log('  3. Or trigger directly in 1 click from GitHub Actions Web UI:');
+  console.log(`     👉 https://github.com/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${workflowFile}`);
+  console.log(`     Click "Run workflow", enter version: ${version}, and click "Run workflow".\n`);
+  return { method: 'manual', success: false };
+}
+
+async function release(targetInput = 'patch', options = {}) {
+  const isDryRun = options.dryRun || false;
+  console.log('\n========================================================');
+  console.log(`🚀 DotyNotes Production Release Orchestrator`);
+  if (isDryRun) {
+    console.log('   [DRY RUN SIMULATION MODE - No files or git state will be modified]');
+  }
+  console.log('========================================================\n');
+
+  // Step 1: Check working tree
+  console.log('👉 [1/6] Validating git working tree...');
+  let gitStatus = '';
   try {
     gitStatus = execSync('git status --porcelain', { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
   } catch (err) {
     throw new Error(`Git status check failed: ${err.message}`);
   }
 
-  if (gitStatus.length > 0) {
+  if (gitStatus.length > 0 && !options.allowDirty && !isDryRun) {
     console.error('\n❌ Release Aborted: Git working tree is dirty.');
     console.error('Uncommitted changes detected in repository:');
     console.error(gitStatus);
     console.error('\nPlease commit, stash, or review your changes before running release.\n');
     process.exit(1);
+  } else if (gitStatus.length > 0) {
+    console.log('   ⚠️ Notice: Working tree has uncommitted changes (permitted in dry-run mode).');
+  } else {
+    console.log('   ✅ Working tree is clean.');
   }
-  console.log('   ✅ Working tree is clean (no uncommitted or untracked changes).');
 
   // Step 2: Check current branch
-  console.log('\n👉 [Step 2/8] Checking current git branch...');
-  let currentBranch;
+  console.log('\n👉 [2/6] Validating git branch...');
+  let currentBranch = 'master';
   try {
     currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
   } catch (err) {
-    throw new Error(`Git branch check failed: ${err.message}`);
+    console.warn(`   ⚠️ Warning: Could not detect git branch: ${err.message}`);
   }
 
-  if (currentBranch !== 'master') {
+  if (currentBranch !== 'master' && !options.allowBranch && !isDryRun) {
     console.error(`\n❌ Release Aborted: Releases must be initiated from 'master' branch (current: '${currentBranch}').\n`);
     process.exit(1);
+  } else if (currentBranch !== 'master') {
+    console.log(`   ⚠️ Notice: Current branch is '${currentBranch}' (permitted in dry-run mode).`);
+  } else {
+    console.log(`   ✅ On branch '${currentBranch}'.`);
   }
-  console.log(`   ✅ On branch '${currentBranch}'.`);
 
-  // Step 3: Check version consistency across project declarations
-  console.log('\n👉 [Step 3/8] Validating version consistency...');
+  // Step 3: Validate version consistency and calculate next target
+  console.log('\n👉 [3/6] Validating version consistency and calculating next release...');
   const { appVersion, versionCode, isConsistent } = getStatus();
   if (!isConsistent || !appVersion || !versionCode) {
     console.error('\n❌ Release Aborted: Project version declarations are inconsistent.');
     console.error('Run `npm run version:check` to inspect mismatches.\n');
     process.exit(1);
   }
-  console.log(`   ✅ Current versions consistent: ${appVersion} (versionCode: ${versionCode}).`);
 
-  // Calculate next version
-  const parsed = parseSemver(appVersion);
-  let nextMajor = parsed.major;
-  let nextMinor = parsed.minor;
-  let nextPatch = parsed.patch;
+  const { nextVersion, nextCode, targetTag } = calculateNextVersionAndCode(appVersion, versionCode, targetInput);
+  console.log(`\n🎯 Target Release: v${appVersion} (code: ${versionCode}) -> v${nextVersion} (code: ${nextCode})`);
+  console.log(`   Target Tag    : ${targetTag}`);
 
-  if (bumpType === 'patch') {
-    nextPatch += 1;
-  } else if (bumpType === 'minor') {
-    nextMinor += 1;
-    nextPatch = 0;
-  } else if (bumpType === 'major') {
-    nextMajor += 1;
-    nextMinor = 0;
-    nextPatch = 0;
-  } else if (SEMVER_REGEX.test(bumpType.replace(/^v/, ''))) {
-    const custom = parseSemver(bumpType);
-    if (compareSemver(custom.formatted, appVersion) <= 0) {
-      throw new Error(`Custom version '${custom.formatted}' must be strictly greater than current version '${appVersion}'.`);
-    }
-    nextMajor = custom.major;
-    nextMinor = custom.minor;
-    nextPatch = custom.patch;
-  } else {
-    throw new Error(`Unknown bump type: '${bumpType}'. Must be 'patch', 'minor', 'major', or an explicit 'X.Y.Z'.`);
-  }
-
-  const nextVersion = `${nextMajor}.${nextMinor}.${nextPatch}`;
-  const nextVersionCode = versionCode + 1;
-  const targetTag = `v${nextVersion}`;
-
-  console.log(`\n🎯 Target Release: ${appVersion} -> ${nextVersion} (versionCode: ${versionCode} -> ${nextVersionCode}, Tag: ${targetTag})`);
-
-  // Step 4: Verify target tag does not already exist
-  console.log('\n👉 [Step 4/8] Checking for tag collisions...');
-  let localTags;
+  // Step 4: Check for tag collision
+  console.log('\n👉 [4/6] Checking for tag collisions...');
+  let localTags = '';
   try {
     localTags = execSync(`git tag -l "${targetTag}"`, { cwd: REPO_ROOT, encoding: 'utf-8' }).trim();
-  } catch (err) {
-    localTags = '';
-  }
+  } catch (_) {}
+
   if (localTags === targetTag) {
     console.error(`\n❌ Release Aborted: Local git tag '${targetTag}' already exists.\n`);
     process.exit(1);
@@ -322,111 +363,160 @@ function release(bumpType = 'patch', options = {}) {
       process.exit(1);
     }
   } catch (err) {
-    console.warn(`   ⚠️ Warning: Could not query remote tags: ${err.message}`);
+    console.warn(`   ⚠️ Note: Could not query remote tags: ${err.message}`);
   }
   console.log(`   ✅ Tag '${targetTag}' is available.`);
 
-  // Step 5: Run quality gate tests
-  console.log('\n👉 [Step 5/8] Running pre-release quality gate (automated regression tests & lint)...');
-  try {
-    console.log('   Running npm test (6 test suites)...');
-    execSync('npm test', { cwd: REPO_ROOT, stdio: 'inherit' });
-    console.log('   Running npm run lint...');
-    execSync('npm run lint', { cwd: REPO_ROOT, stdio: 'inherit' });
-    console.log('   Running website tests...');
-    execSync('npm --prefix dotynotes-website run test', { cwd: REPO_ROOT, stdio: 'inherit' });
-  } catch (err) {
-    console.error('\n❌ Release Aborted: Pre-release quality gate failed. Fix errors before releasing.\n');
-    process.exit(1);
-  }
-  console.log('   ✅ All quality gate tests passed.');
+  // Step 5: Run quality gate tests locally
+  console.log('\n👉 [5/6] Running local quality gate (regression tests, linters, manifests)...');
+  if (!options.skipTests) {
+    try {
+      console.log('   Running manifest sync unit tests...');
+      execSync('node scripts/release_manifest_sync_test.cjs', { cwd: REPO_ROOT, stdio: 'inherit' });
 
+      console.log('   Running automated regression tests...');
+      execSync('npm test', { cwd: REPO_ROOT, stdio: 'inherit' });
+
+      console.log('   Running website automated tests...');
+      execSync('npm --prefix dotynotes-website run test', { cwd: REPO_ROOT, stdio: 'inherit' });
+    } catch (err) {
+      console.error('\n❌ Release Aborted: Quality gate failed. Fix errors before releasing.\n');
+      process.exit(1);
+    }
+    console.log('   ✅ All local quality gate tests passed.');
+  } else {
+    console.log('   ℹ️ Local tests skipped via options.skipTests.');
+  }
+
+  // Step 6: Dispatch release workflow
+  console.log('\n👉 [6/6] Dispatching production release workflow...');
   if (isDryRun) {
-    console.log('\n✨ [DRY RUN COMPLETE] Pre-release checks passed successfully.');
-    console.log(`Would bump to: ${nextVersion} (versionCode: ${nextVersionCode})`);
-    console.log(`Would commit and push tag: ${targetTag}\n`);
-    return;
+    console.log('\n========================================================');
+    console.log('✨ [DRY RUN COMPLETE] Release simulation succeeded with 0 errors!');
+    console.log(`   Current Version : ${appVersion} (versionCode: ${versionCode})`);
+    console.log(`   Target Version  : ${nextVersion} (versionCode: ${nextCode})`);
+    console.log(`   Target Tag      : ${targetTag}`);
+    console.log(`   Workflow Target : .github/workflows/${WORKFLOW_NAME}`);
+    console.log(`   Inputs          : { version: '${nextVersion}', release_notes: '${options.notes || ''}' }`);
+    console.log('   All local checks, tests, and manifest dry-runs verified.');
+    console.log('   No files or git state were modified.');
+    console.log('========================================================\n');
+    return {
+      dryRun: true,
+      currentVersion: appVersion,
+      nextVersion,
+      nextCode,
+      targetTag,
+    };
   }
 
-  // Step 6: Atomic version bump
-  console.log('\n👉 [Step 6/8] Applying atomic version bump...');
-  applyVersions(nextVersion, nextVersionCode);
+  const result = await dispatchWorkflow(nextVersion, options);
 
-  // Step 7: Commit version bump
-  console.log('\n👉 [Step 7/8] Creating git release commit and tag...');
-  const filesToStage = [
-    'app.json',
-    'package.json',
-    'package-lock.json',
-    path.join('dotynotes-website', 'src', 'constants', 'config.ts'),
-    'update-manifest.json',
-    path.join('dotynotes-website', 'public', 'update-manifest.json'),
-  ];
-  execSync(`git add ${filesToStage.map(f => `"${f}"`).join(' ')}`, { cwd: REPO_ROOT, stdio: 'inherit' });
-  execSync(`git commit -m "chore(release): bump version to v${nextVersion}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
-  execSync(`git tag -a "${targetTag}" -m "Release ${targetTag}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
-  console.log(`   ✅ Created commit and annotated tag '${targetTag}'.`);
+  console.log('\n========================================================');
+  console.log('🎉 PRODUCTION RELEASE INITIATED!');
+  console.log(`   Target Version: ${nextVersion} (versionCode: ${nextCode})`);
+  console.log(`   Release Tag   : ${targetTag}`);
+  console.log(`   Track build at: https://github.com/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${WORKFLOW_NAME}`);
+  console.log('========================================================\n');
 
-  // Step 8: Push commit and tag to GitHub
-  console.log('\n👉 [Step 8/8] Pushing release commit and tag to origin...');
-  execSync('git push origin master', { cwd: REPO_ROOT, stdio: 'inherit' });
-  execSync(`git push origin "${targetTag}"`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  return {
+    dryRun: false,
+    currentVersion: appVersion,
+    nextVersion,
+    nextCode,
+    targetTag,
+    dispatchResult: result,
+  };
+}
 
-  console.log('\n========================================');
-  console.log('🎉 RELEASE TRIGGERED SUCCESSFULLY!');
-  console.log(`   Version: ${nextVersion} (versionCode: ${nextVersionCode})`);
-  console.log(`   Tag: ${targetTag}`);
-  console.log('   GitHub Actions is now running the Android Release workflow.');
-  console.log('   Track build at: https://github.com/abhijeet02singh/dotynotes/actions');
-  console.log('========================================\n');
+function parseReleaseCliArgs(args) {
+  let targetVersion = null;
+  let isDryRun = false;
+  let notes = '';
+  let prerelease = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--dry-run') {
+      isDryRun = true;
+    } else if (a === '--prerelease') {
+      prerelease = true;
+    } else if (a === '--notes' || a === '-m') {
+      notes = args[++i] || '';
+    } else if (!a.startsWith('-') && !targetVersion) {
+      targetVersion = a;
+    }
+  }
+
+  return {
+    targetVersion: targetVersion || 'patch',
+    dryRun: isDryRun,
+    notes,
+    prerelease,
+  };
 }
 
 // CLI handler
-const args = process.argv.slice(2);
-const command = args[0] || 'status';
+if (require.main === module) {
+  const rawArgs = process.argv.slice(2);
+  const command = rawArgs[0] || 'status';
 
-try {
-  switch (command) {
-    case 'status':
-    case 'check':
-      getStatus();
-      break;
+  (async () => {
+    try {
+      switch (command) {
+        case 'status':
+        case 'check':
+          getStatus();
+          break;
 
-    case 'bump': {
-      const type = args[1] || 'patch';
-      bumpVersion(type);
-      break;
-    }
+        case 'bump': {
+          const type = rawArgs[1] || 'patch';
+          bumpVersion(type);
+          break;
+        }
 
-    case 'release': {
-      const type = args[1] || 'patch';
-      const isDryRun = args.includes('--dry-run');
-      release(type, { dryRun: isDryRun });
-      break;
-    }
+        case 'release': {
+          const cliOptions = parseReleaseCliArgs(rawArgs.slice(1));
+          await release(cliOptions.targetVersion, cliOptions);
+          break;
+        }
 
-    case 'set': {
-      const targetVersion = args[1];
-      const targetCode = args[2] ? parseInt(args[2], 10) : undefined;
-      if (!targetVersion) {
-        console.error('Usage: node scripts/version_manager.cjs set <version> [versionCode]');
-        process.exit(1);
+        case 'set': {
+          const targetVersion = rawArgs[1];
+          const targetCode = rawArgs[2] ? parseInt(rawArgs[2], 10) : undefined;
+          if (!targetVersion) {
+            console.error('Usage: node scripts/version_manager.cjs set <version> [versionCode]');
+            process.exit(1);
+          }
+          const current = readAppJson();
+          const currentCode = current.expo?.android?.versionCode || 1;
+          applyVersions(targetVersion, targetCode !== undefined ? targetCode : currentCode);
+          break;
+        }
+
+        default:
+          console.log('Usage: node scripts/version_manager.cjs <status|bump|release|set>');
+          console.log('  status                          - check consistency of all version declarations');
+          console.log('  bump <patch|minor|major|X.Y.Z>  - increment version and versionCode locally');
+          console.log('  release [X.Y.Z] [--dry-run]     - validate, test, and trigger GitHub Actions release');
+          console.log('  set <X.Y.Z> [code]              - set exact version and optional versionCode');
+          break;
       }
-      const current = readAppJson();
-      const currentCode = current.expo?.android?.versionCode || 1;
-      applyVersions(targetVersion, targetCode !== undefined ? targetCode : currentCode);
-      break;
+    } catch (err) {
+      console.error(`\n❌ Error: ${err.message}\n`);
+      process.exit(1);
     }
-
-    default:
-      console.log('Usage: node scripts/version_manager.cjs <status|bump|release|set>');
-      console.log('  status                         - check consistency of all version declarations');
-      console.log('  bump <patch|minor|major|X.Y.Z> - increment version and versionCode locally');
-      console.log('  release <patch|minor|major>    - validate, bump, commit, tag and push release');
-      console.log('  set <X.Y.Z> [code]             - set exact version and optional versionCode');
-      break;
-  }
-} catch (err) {
-  console.error(`Error: ${err.message}`);
-  process.exit(1);
+  })();
 }
+
+module.exports = {
+  getStatus,
+  parseSemver,
+  compareSemver,
+  bumpVersion,
+  calculateNextVersionAndCode,
+  applyVersions,
+  release,
+  dispatchWorkflow,
+  parseReleaseCliArgs,
+};
