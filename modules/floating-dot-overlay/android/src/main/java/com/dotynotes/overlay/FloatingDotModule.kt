@@ -48,7 +48,9 @@ class FloatingDotModule : Module() {
             OverlayNoteRepository.getInstance(context).setOnMutationListener { type, data ->
                 try {
                     sendEvent("onQuickNoteMutation", bundleOf("type" to type, "data" to data))
-                    sendEvent("onQuickNoteSaved", bundleOf("note" to data))
+                    if (type != "DELETE") {
+                        sendEvent("onQuickNoteSaved", bundleOf("note" to data))
+                    }
                 } catch (e: Exception) {
                     // Suppress if listeners not yet registered
                 }

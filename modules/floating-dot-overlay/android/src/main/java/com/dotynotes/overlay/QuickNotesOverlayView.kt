@@ -1,11 +1,14 @@
 package com.dotynotes.overlay
 
 import android.app.AlertDialog
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.text.Editable
 import android.text.Spannable
 import android.text.Spanned
@@ -14,11 +17,18 @@ import android.text.TextWatcher
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
@@ -52,6 +62,8 @@ class QuickNotesOverlayView(
     )
 
     companion object {
+        private const val TAG = "QuickNotesOverlayView"
+
         val PASTELS = listOf(
             Pastel("blue", "#A8C7FA", "#8AB4F8", "#042A6B", "#C2E7FF"),
             Pastel("mint", "#A4E7C0", "#82D8A4", "#074820", "#C4EED0"),
@@ -147,6 +159,7 @@ class QuickNotesOverlayView(
     private val editorHeaderTitle: TextView
     private val editorStatusBadge: TextView
     private val editorPinBtn: TextView
+    private val editorReminderBtn: TextView
     private val editorTitleInput: EditText
     private val editorContentInput: RichTextEditText
     private val editorPaletteRow: LinearLayout
@@ -169,10 +182,13 @@ class QuickNotesOverlayView(
 
     // Current Editor State
     private var editingNote: OverlayNoteRepository.OverlayNote? = null
-    private var selectedColorId: String = "purple"
+    private var selectedColorId: String = "pink"
     private var isPinnedState: Boolean = false
+    private var currentReminderAt: Long? = null
     private var hasUnsavedChanges: Boolean = false
     private var isSaving: Boolean = false
+    private var isDeleting: Boolean = false
+    private var inOverlayDeleteConfirmView: View? = null
 
     private val themeListener: () -> Unit = {
         post {
@@ -368,6 +384,7 @@ class QuickNotesOverlayView(
                 setColor(Color.parseColor("#33FFFFFF"))
                 cornerRadius = 15 * density
             }
+            contentDescription = "Pin note"
             setOnClickListener {
                 isPinnedState = !isPinnedState
                 updatePinVisual()
@@ -376,6 +393,26 @@ class QuickNotesOverlayView(
             }
         }
         editorHeader.addView(editorPinBtn)
+
+        // Reminder Button (Clock)
+        editorReminderBtn = TextView(context).apply {
+            text = "⏰"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            gravity = Gravity.CENTER
+            val sz = (30 * density).toInt()
+            layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                marginEnd = (6 * density).toInt()
+            }
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#33FFFFFF"))
+                cornerRadius = 15 * density
+            }
+            contentDescription = "Set reminder"
+            setOnClickListener {
+                showReminderPicker()
+            }
+        }
+        editorHeader.addView(editorReminderBtn)
 
         // Close / Done button
         val editorDoneBtn = TextView(context).apply {
@@ -714,6 +751,7 @@ class QuickNotesOverlayView(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        removeInOverlayConfirm()
         repository.removeThemeUpdatedListener(themeListener)
     }
 
@@ -767,10 +805,15 @@ class QuickNotesOverlayView(
         listView.visibility = View.VISIBLE
         editorView.visibility = View.GONE
         editingNote = null
+        hasUnsavedChanges = false
 
         val lp = cardContainer.layoutParams
         lp.height = LayoutParams.WRAP_CONTENT
         cardContainer.layoutParams = lp
+
+        // Dismiss keyboard if open when returning to list
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(windowToken, 0)
 
         refreshRecentNotes()
     }
@@ -784,8 +827,9 @@ class QuickNotesOverlayView(
 
         if (note != null) {
             // Edit Mode
-            selectedColorId = note.colorSchemeId.ifEmpty { "purple" }
+            selectedColorId = note.colorSchemeId.ifEmpty { "pink" }
             isPinnedState = note.isPinned
+            currentReminderAt = note.reminderAt
             editorTitleInput.setText(note.title)
 
             // Parse rich text and restore native spans cleanly
@@ -803,8 +847,9 @@ class QuickNotesOverlayView(
             editorStatusBadge.text = "Saved ✓"
         } else {
             // Create Mode
-            selectedColorId = "purple"
+            selectedColorId = "pink"
             isPinnedState = false
+            currentReminderAt = null
             editorTitleInput.setText("")
             editorContentInput.setText("")
             editorDeleteBtn.visibility = View.GONE
@@ -815,6 +860,7 @@ class QuickNotesOverlayView(
 
         applyPastelTheme(selectedColorId)
         updatePinVisual()
+        updateReminderVisual()
         buildColorPalette()
 
         listView.visibility = View.GONE
@@ -913,6 +959,137 @@ class QuickNotesOverlayView(
                 setColor(Color.parseColor("#33FFFFFF"))
                 cornerRadius = 15 * density
             }
+        }
+    }
+
+    private fun updateReminderVisual() {
+        val reminder = currentReminderAt
+        val hasActiveReminder = reminder != null && reminder > System.currentTimeMillis()
+        val pastel = getPastel(selectedColorId)
+
+        if (hasActiveReminder) {
+            editorReminderBtn.background = GradientDrawable().apply {
+                setColor(Color.parseColor(pastel.tagBg))
+                cornerRadius = 15 * density
+                setStroke((1.5f * density).toInt(), Color.parseColor(pastel.border))
+            }
+            editorReminderBtn.contentDescription = "Reminder scheduled: " +
+                SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(reminder))
+        } else {
+            editorReminderBtn.background = GradientDrawable().apply {
+                setColor(Color.parseColor("#33FFFFFF"))
+                cornerRadius = 15 * density
+            }
+            editorReminderBtn.contentDescription = "Set reminder"
+        }
+    }
+
+    private fun showReminderPicker() {
+        val existingReminder = currentReminderAt
+
+        if (existingReminder != null && existingReminder > System.currentTimeMillis()) {
+            val formattedDate = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(existingReminder))
+            try {
+                val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Scheduled Reminder")
+                    .setMessage("Reminder set for $formattedDate")
+                    .setPositiveButton("Change") { _, _ ->
+                        openDateTimePicker()
+                    }
+                    .setNeutralButton("Remove") { _, _ ->
+                        currentReminderAt = null
+                        updateReminderVisual()
+                        hasUnsavedChanges = true
+                        editorStatusBadge.text = "Draft"
+                        Toast.makeText(context, "Reminder removed", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .create()
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+                } else {
+                    @Suppress("DEPRECATION")
+                    dialog.window?.setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
+                }
+                dialog.show()
+            } catch (e: Exception) {
+                openDateTimePicker()
+            }
+        } else {
+            openDateTimePicker()
+        }
+    }
+
+    private fun openDateTimePicker() {
+        val calendar = Calendar.getInstance()
+        val existing = currentReminderAt
+        if (existing != null && existing > System.currentTimeMillis()) {
+            calendar.timeInMillis = existing
+        } else {
+            calendar.add(Calendar.HOUR_OF_DAY, 1)
+        }
+
+        try {
+            val datePickerDialog = DatePickerDialog(
+                context,
+                { _, year, month, dayOfMonth ->
+                    calendar.set(Calendar.YEAR, year)
+                    calendar.set(Calendar.MONTH, month)
+                    calendar.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+
+                    try {
+                        val timePickerDialog = TimePickerDialog(
+                            context,
+                            { _, hourOfDay, minute ->
+                                calendar.set(Calendar.HOUR_OF_DAY, hourOfDay)
+                                calendar.set(Calendar.MINUTE, minute)
+                                calendar.set(Calendar.SECOND, 0)
+                                calendar.set(Calendar.MILLISECOND, 0)
+
+                                val targetTime = calendar.timeInMillis
+                                if (targetTime <= System.currentTimeMillis()) {
+                                    Toast.makeText(context, "Please choose a future time", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    currentReminderAt = targetTime
+                                    updateReminderVisual()
+                                    hasUnsavedChanges = true
+                                    editorStatusBadge.text = "Draft"
+                                    val formatted = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(targetTime))
+                                    Toast.makeText(context, "Reminder set for $formatted", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            calendar.get(Calendar.HOUR_OF_DAY),
+                            calendar.get(Calendar.MINUTE),
+                            false
+                        )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            timePickerDialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            timePickerDialog.window?.setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
+                        }
+                        timePickerDialog.show()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error displaying time picker: ${e.message}")
+                    }
+                },
+                calendar.get(Calendar.YEAR),
+                calendar.get(Calendar.MONTH),
+                calendar.get(Calendar.DAY_OF_MONTH)
+            )
+            datePickerDialog.datePicker.minDate = System.currentTimeMillis() - 1000
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                datePickerDialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+            } else {
+                @Suppress("DEPRECATION")
+                datePickerDialog.window?.setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
+            }
+            datePickerDialog.show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error displaying date picker: ${e.message}")
+            Toast.makeText(context, "Cannot open reminder picker from overlay", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1390,7 +1567,9 @@ class QuickNotesOverlayView(
                     title = title,
                     content = content,
                     colorSchemeId = selectedColorId,
-                    isPinned = isPinnedState
+                    isPinned = isPinnedState,
+                    reminderAt = currentReminderAt,
+                    hasReminderAtUpdate = true
                 )
                 if (success) {
                     hasUnsavedChanges = false
@@ -1405,7 +1584,8 @@ class QuickNotesOverlayView(
                     title = title,
                     content = content,
                     colorSchemeId = selectedColorId,
-                    isPinned = isPinnedState
+                    isPinned = isPinnedState,
+                    reminderAt = currentReminderAt
                 )
                 if (created != null) {
                     hasUnsavedChanges = false
@@ -1428,20 +1608,162 @@ class QuickNotesOverlayView(
     }
 
     private fun confirmDeleteCurrentNote() {
+        if (isDeleting) return
+        if (inOverlayDeleteConfirmView != null) return
         val note = editingNote ?: return
-        AlertDialog.Builder(context)
-            .setTitle("Delete Note")
-            .setMessage("Are you sure you want to permanently delete this note?")
-            .setPositiveButton("Delete") { _, _ ->
-                val deleted = repository.deleteQuickNote(note.id)
-                if (deleted) {
-                    Toast.makeText(context, "Note deleted", Toast.LENGTH_SHORT).show()
-                    onNoteSavedCallback()
-                    showListView()
-                }
+        showInOverlayDeleteConfirmation(note)
+    }
+
+    private fun executeDelete(note: OverlayNoteRepository.OverlayNote) {
+        if (isDeleting) return
+        isDeleting = true
+        editorDeleteBtn.isEnabled = false
+        try {
+            val deleted = repository.deleteQuickNote(note.id)
+            if (deleted) {
+                Toast.makeText(context, "Note deleted", Toast.LENGTH_SHORT).show()
+                hasUnsavedChanges = false
+                editingNote = null
+                editorTitleInput.setText("")
+                editorContentInput.setText("")
+                onNoteSavedCallback()
+                showListView()
+            } else {
+                Toast.makeText(context, "Could not delete note", Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Delete error: ${e.message}")
+            Toast.makeText(context, "Error deleting note", Toast.LENGTH_SHORT).show()
+        } finally {
+            isDeleting = false
+            editorDeleteBtn.isEnabled = true
+            removeInOverlayConfirm()
+        }
+    }
+
+    private fun showInOverlayDeleteConfirmation(note: OverlayNoteRepository.OverlayNote) {
+        removeInOverlayConfirm()
+        val theme = getCurrentTheme()
+        val confirmOverlay = FrameLayout(context).apply {
+            setBackgroundColor(Color.parseColor("#99000000"))
+            isClickable = true
+            isFocusable = true
+            elevation = 100 * density
+            setOnClickListener { removeInOverlayConfirm() }
+        }
+
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            val pad = (20 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                setColor(theme.colors.surface)
+                cornerRadius = 18 * density
+                setStroke((1.5f * density).toInt(), theme.colors.border)
+            }
+            elevation = 102 * density
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { /* Consume clicks inside dialog card */ }
+            layoutParams = FrameLayout.LayoutParams(
+                (280 * density).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        val titleView = TextView(context).apply {
+            text = "Delete Note"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(theme.colors.textPrimary)
+            gravity = Gravity.CENTER
+        }
+        card.addView(titleView)
+
+        val msgView = TextView(context).apply {
+            text = "Are you sure you want to permanently delete this note?"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(theme.colors.textSecondary)
+            gravity = Gravity.CENTER
+            setPadding(0, (8 * density).toInt(), 0, (18 * density).toInt())
+        }
+        card.addView(msgView)
+
+        val btnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val cancelBtn = TextView(context).apply {
+            text = "Cancel"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(theme.colors.textSecondary)
+            val hPad = (16 * density).toInt()
+            val vPad = (8 * density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            background = GradientDrawable().apply {
+                setColor(theme.colors.surfaceSecondary)
+                cornerRadius = 10 * density
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { removeInOverlayConfirm() }
+        }
+        btnRow.addView(cancelBtn)
+
+        val spacer = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams((12 * density).toInt(), 1)
+        }
+        btnRow.addView(spacer)
+
+        val deleteBtn = TextView(context).apply {
+            text = "Delete"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            val hPad = (18 * density).toInt()
+            val vPad = (8 * density).toInt()
+            setPadding(hPad, vPad, hPad, vPad)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#E11D48"))
+                cornerRadius = 10 * density
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                isEnabled = false
+                cancelBtn.isEnabled = false
+                executeDelete(note)
+            }
+        }
+        btnRow.addView(deleteBtn)
+
+        card.addView(btnRow)
+        confirmOverlay.addView(card)
+
+        // Dismiss keyboard if open
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(windowToken, 0)
+        editorContentInput.clearFocus()
+        editorTitleInput.clearFocus()
+
+        inOverlayDeleteConfirmView = confirmOverlay
+        addView(confirmOverlay, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        confirmOverlay.bringToFront()
+    }
+
+    private fun removeInOverlayConfirm() {
+        inOverlayDeleteConfirmView?.let {
+            removeView(it)
+            inOverlayDeleteConfirmView = null
+        }
     }
 
     private fun toggleCompleteCurrentNote() {
@@ -1539,6 +1861,29 @@ class QuickNotesOverlayView(
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             topRow.addView(noteTitle)
+
+            if (note.reminderAt != null && note.reminderAt > System.currentTimeMillis()) {
+                val reminderBadge = TextView(context).apply {
+                    text = "⏰ " + SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(note.reminderAt))
+                    setTextColor(Color.parseColor(pastel.text))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    val bPadH = (6 * density).toInt()
+                    val bPadV = (2 * density).toInt()
+                    setPadding(bPadH, bPadV, bPadH, bPadV)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor(pastel.tagBg))
+                        cornerRadius = 6 * density
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        marginEnd = (6 * density).toInt()
+                    }
+                }
+                topRow.addView(reminderBadge)
+            }
 
             if (note.tag.isNotEmpty()) {
                 val tagBadge = TextView(context).apply {

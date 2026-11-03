@@ -62,11 +62,11 @@ export function ThemeProvider({ children }) {
   // Device system appearance: 'light' | 'dark' | null
   const systemColorScheme = useColorScheme();
 
-  // User persistent theme appearance mode: 'system' | 'light' | 'dark'
-  const [themeModeState, setThemeModeState] = useState('system');
+  // User persistent theme appearance mode: 'light' | 'dark' | 'system' (default 'light')
+  const [themeModeState, setThemeModeState] = useState('light');
 
-  // User persistent UI color theme: 'purple' | 'sky' | 'orange' | 'mint' | 'pink' | 'periwinkle' | 'green'
-  const [colorThemeState, setColorThemeState] = useState('purple');
+  // User persistent UI color theme: 'pink' | 'purple' | 'sky' | 'orange' | 'mint' | 'periwinkle' | 'green' (default 'pink')
+  const [colorThemeState, setColorThemeState] = useState('pink');
 
   const [isThemeLoaded, setIsThemeLoaded] = useState(false);
 
@@ -86,31 +86,50 @@ export function ThemeProvider({ children }) {
     let isMounted = true;
     async function loadPreferences() {
       try {
-        const [savedThemeMode, savedColorTheme, savedDefaultColor] = await Promise.all([
-          getSettingAsync('app_theme_preference', 'system'),
-          getSettingAsync('app_color_theme', 'purple'),
+        const [savedThemeMode, savedColorTheme, savedDefaultColor, rosePinkMigrated] = await Promise.all([
+          getSettingAsync('app_theme_preference', null),
+          getSettingAsync('app_color_theme', null),
           getSettingAsync('default_note_color', 'lavender'),
+          getSettingAsync('rose_pink_theme_migrated', null),
         ]);
 
         if (isMounted) {
-          let effectiveMode = 'system';
-          let effectiveColor = 'purple';
+          let effectiveMode = 'light';
+          let effectiveColor = 'pink';
 
-          // Backward compatibility check:
-          // If app_theme_preference stored a color theme ID, migrate it cleanly
-          if (savedThemeMode && VALID_COLOR_THEMES.includes(savedThemeMode)) {
-            effectiveColor = savedThemeMode;
-            setColorThemeState(savedThemeMode);
-            setThemeModeState('system');
-          } else if (savedThemeMode && VALID_MODES.includes(savedThemeMode)) {
-            effectiveMode = savedThemeMode;
-            setThemeModeState(savedThemeMode);
+          if (rosePinkMigrated === null) {
+            // Fresh installation or upgrade from legacy default
+            if (savedColorTheme && savedColorTheme !== 'purple' && VALID_COLOR_THEMES.includes(savedColorTheme)) {
+              effectiveColor = savedColorTheme;
+            } else {
+              effectiveColor = 'pink';
+              await setSettingAsync('app_color_theme', 'pink').catch(() => {});
+            }
+
+            if (savedThemeMode && savedThemeMode !== 'system' && VALID_MODES.includes(savedThemeMode)) {
+              effectiveMode = savedThemeMode;
+            } else {
+              effectiveMode = 'light';
+              await setSettingAsync('app_theme_preference', 'light').catch(() => {});
+            }
+
+            await setSettingAsync('rose_pink_theme_migrated', 'true').catch(() => {});
+          } else {
+            // Respect previously saved settings
+            if (savedThemeMode && VALID_COLOR_THEMES.includes(savedThemeMode)) {
+              effectiveColor = savedThemeMode;
+              effectiveMode = 'light';
+            } else if (savedThemeMode && VALID_MODES.includes(savedThemeMode)) {
+              effectiveMode = savedThemeMode;
+            }
+
+            if (savedColorTheme && VALID_COLOR_THEMES.includes(savedColorTheme)) {
+              effectiveColor = savedColorTheme;
+            }
           }
 
-          if (savedColorTheme && VALID_COLOR_THEMES.includes(savedColorTheme)) {
-            effectiveColor = savedColorTheme;
-            setColorThemeState(savedColorTheme);
-          }
+          setThemeModeState(effectiveMode);
+          setColorThemeState(effectiveColor);
 
           if (savedDefaultColor) {
             setDefaultStickyColorState(savedDefaultColor);

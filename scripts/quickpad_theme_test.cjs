@@ -171,7 +171,7 @@ const KOTLIN_MIRROR_CHECK = {
     darkPrimary: '#2DD4BF',
   },
   pink: {
-    lightPrimary: '#DB2777',
+    lightPrimary: '#E85D8E',
     darkPrimary: '#F472B6',
   },
   periwinkle: {

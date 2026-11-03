@@ -156,130 +156,142 @@ async function runIntegrityCheckAsync(db) {
   }
 }
 
-let isFlushingMutations = false;
+let activeFlushPromise = null;
 
 /**
  * Ingests all pending overlay mutations (creations, updates, deletions) into SQLite.
  * Single source of truth: all persistent mutations land in dotynotes.db.
  */
-export async function flushPendingOverlayMutations(dbTarget) {
-  if (!isNativeModuleAvailable || isFlushingMutations) return;
-  isFlushingMutations = true;
-  try {
-    const mutations = await getPendingOverlayMutationsAsync();
-    const db = dbTarget || (await getDatabase());
-    let hasChanges = false;
-
-    // 1. Process pending deletions
-    if (Array.isArray(mutations.deletions) && mutations.deletions.length > 0) {
-      console.log(`[DotyNotes DB] Processing ${mutations.deletions.length} pending deletion(s)...`);
-      for (const id of mutations.deletions) {
-        if (!id) continue;
-        try {
-          const row = await db.getFirstAsync('SELECT notificationId FROM notes WHERE id = ?;', [id]);
-          if (row?.notificationId) {
-            await cancelNoteReminderAsync(row.notificationId);
-          }
-        } catch (_) {}
-        await db.runAsync(`DELETE FROM notes WHERE id = ?;`, [id]);
-      }
-      hasChanges = true;
-    }
-
-    // 2. Process pending note creations / updates
-    if (Array.isArray(mutations.notes) && mutations.notes.length > 0) {
-      console.log(`[DotyNotes DB] Ingesting ${mutations.notes.length} pending note(s) from overlay...`);
-      for (const note of mutations.notes) {
-        if (!note.id) continue;
-        let reminderAt = note.reminderAt !== undefined ? note.reminderAt : null;
-        let notificationId = note.notificationId !== undefined ? note.notificationId : null;
-        try {
-          const existing = await db.getFirstAsync(
-            'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
-            [note.id]
-          );
-          if (existing) {
-            if (reminderAt === null && existing.reminderAt != null) reminderAt = existing.reminderAt;
-            if (notificationId === null && existing.notificationId != null) notificationId = existing.notificationId;
-          }
-        } catch (_) {}
-
-        await db.runAsync(
-          `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            note.id,
-            note.title || 'Quick Note',
-            note.content || '',
-            note.colorSchemeId || 'purple',
-            note.tag || 'Floating',
-            note.isPinned ? 1 : 0,
-            note.isArchived ? 1 : 0,
-            Number(note.createdAt) || Date.now(),
-            Number(note.updatedAt) || Date.now(),
-            reminderAt,
-            notificationId,
-          ]
-        );
-      }
-      hasChanges = true;
-    }
-
-    // Also check legacy pending queue if present
-    const legacyPendingJson = await getPendingOverlayNotesAsync();
-    if (legacyPendingJson && legacyPendingJson !== '[]') {
-      try {
-        const legacyNotes = JSON.parse(legacyPendingJson);
-        if (Array.isArray(legacyNotes) && legacyNotes.length > 0) {
-          for (const note of legacyNotes) {
-            if (!note.id) continue;
-            let reminderAt = null;
-            let notificationId = null;
-            try {
-              const existing = await db.getFirstAsync(
-                'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
-                [note.id]
-              );
-              if (existing) {
-                reminderAt = existing.reminderAt;
-                notificationId = existing.notificationId;
-              }
-            } catch (_) {}
-
-            await db.runAsync(
-              `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                note.id,
-                note.title || 'Quick Note',
-                note.content || '',
-                note.colorSchemeId || 'purple',
-                note.tag || 'Floating',
-                note.isPinned ? 1 : 0,
-                note.isArchived ? 1 : 0,
-                Number(note.createdAt) || Date.now(),
-                Number(note.updatedAt) || Date.now(),
-                reminderAt,
-                notificationId,
-              ]
-            );
-          }
-          await clearPendingOverlayNotesAsync();
-          hasChanges = true;
-        }
-      } catch (_) {}
-    }
-
-    if (hasChanges) {
-      await clearPendingOverlayMutationsAsync();
-      console.log('[DotyNotes DB] Staging queues cleared; syncing latest state back to overlay...');
-      await syncRecentNotesToOverlay(db);
-    }
-  } catch (e) {
-    console.warn('[DotyNotes DB] Failed to flush pending overlay mutations:', e.message);
-  } finally {
-    isFlushingMutations = false;
+export function flushPendingOverlayMutations(dbTarget) {
+  if (!isNativeModuleAvailable) return Promise.resolve();
+  if (activeFlushPromise) {
+    return activeFlushPromise;
   }
+  activeFlushPromise = (async () => {
+    try {
+      const mutations = await getPendingOverlayMutationsAsync();
+      const db = dbTarget || (await getDatabase());
+      let hasChanges = false;
+
+      // 1. Process pending deletions
+      if (Array.isArray(mutations.deletions) && mutations.deletions.length > 0) {
+        console.log(`[DotyNotes DB] Processing ${mutations.deletions.length} pending deletion(s)...`);
+        for (const id of mutations.deletions) {
+          if (!id) continue;
+          try {
+            const row = await db.getFirstAsync('SELECT notificationId FROM notes WHERE id = ?;', [id]);
+            if (row?.notificationId) {
+              await cancelNoteReminderAsync(row.notificationId);
+            }
+          } catch (_) {}
+          await db.runAsync(`DELETE FROM notes WHERE id = ?;`, [id]);
+        }
+        hasChanges = true;
+      }
+
+      // 2. Process pending note creations / updates
+      if (Array.isArray(mutations.notes) && mutations.notes.length > 0) {
+        console.log(`[DotyNotes DB] Ingesting ${mutations.notes.length} pending note(s) from overlay...`);
+        for (const note of mutations.notes) {
+          if (!note.id) continue;
+          let reminderAt = note.reminderAt !== undefined ? note.reminderAt : null;
+          let notificationId = note.notificationId !== undefined ? note.notificationId : null;
+          try {
+            const existing = await db.getFirstAsync(
+              'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
+              [note.id]
+            );
+            if (note.reminderAt === null && existing?.notificationId) {
+              // Explicitly cleared reminder
+              try {
+                await cancelNoteReminderAsync(existing.notificationId);
+              } catch (_) {}
+              notificationId = null;
+            } else if (note.reminderAt === undefined && existing) {
+              reminderAt = existing.reminderAt;
+              notificationId = existing.notificationId;
+            }
+          } catch (_) {}
+
+          await db.runAsync(
+            `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              note.id,
+              note.title || 'Quick Note',
+              note.content || '',
+              note.colorSchemeId || 'purple',
+              note.tag || 'Floating',
+              note.isPinned ? 1 : 0,
+              note.isArchived ? 1 : 0,
+              Number(note.createdAt) || Date.now(),
+              Number(note.updatedAt) || Date.now(),
+              reminderAt,
+              notificationId,
+            ]
+          );
+        }
+        hasChanges = true;
+      }
+
+      // Also check legacy pending queue if present
+      const legacyPendingJson = await getPendingOverlayNotesAsync();
+      if (legacyPendingJson && legacyPendingJson !== '[]') {
+        try {
+          const legacyNotes = JSON.parse(legacyPendingJson);
+          if (Array.isArray(legacyNotes) && legacyNotes.length > 0) {
+            for (const note of legacyNotes) {
+              if (!note.id) continue;
+              let reminderAt = null;
+              let notificationId = null;
+              try {
+                const existing = await db.getFirstAsync(
+                  'SELECT reminderAt, notificationId FROM notes WHERE id = ?;',
+                  [note.id]
+                );
+                if (existing) {
+                  reminderAt = existing.reminderAt;
+                  notificationId = existing.notificationId;
+                }
+              } catch (_) {}
+
+              await db.runAsync(
+                `INSERT OR REPLACE INTO notes (id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt, reminderAt, notificationId)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  note.id,
+                  note.title || 'Quick Note',
+                  note.content || '',
+                  note.colorSchemeId || 'purple',
+                  note.tag || 'Floating',
+                  note.isPinned ? 1 : 0,
+                  note.isArchived ? 1 : 0,
+                  Number(note.createdAt) || Date.now(),
+                  Number(note.updatedAt) || Date.now(),
+                  reminderAt,
+                  notificationId,
+                ]
+              );
+            }
+            await clearPendingOverlayNotesAsync();
+            hasChanges = true;
+          }
+        } catch (_) {}
+      }
+
+      if (hasChanges) {
+        await clearPendingOverlayMutationsAsync();
+        console.log('[DotyNotes DB] Staging queues cleared; syncing latest state back to overlay...');
+        await syncRecentNotesToOverlay(db);
+        await reconcileScheduledRemindersAsync(db);
+      }
+    } catch (e) {
+      console.warn('[DotyNotes DB] Failed to flush pending overlay mutations:', e.message);
+    } finally {
+      activeFlushPromise = null;
+    }
+  })();
+  return activeFlushPromise;
 }
 
 // Keep legacy alias for existing calls
@@ -293,7 +305,7 @@ export async function syncRecentNotesToOverlay(dbTarget) {
   try {
     const db = dbTarget || (await getDatabase());
     const rows = await db.getAllAsync(
-      `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, createdAt, updatedAt
+      `SELECT id, title, content, colorSchemeId, tag, isPinned, isArchived, reminderAt, notificationId, createdAt, updatedAt
        FROM notes WHERE isArchived = 0 ORDER BY isPinned DESC, updatedAt DESC LIMIT 10;`
     );
     await syncNotesToOverlayAsync(rows);

@@ -269,7 +269,7 @@ const expectedThemes = [
   { id: 'sky', name: 'Sky Blue', colorHex: '#B9D9F5' },
   { id: 'orange', name: 'Sunset Orange', colorHex: '#FFBD78' },
   { id: 'mint', name: 'Mint', colorHex: '#94F0DC' },
-  { id: 'pink', name: 'Rose Pink', colorHex: '#EB409B' },
+  { id: 'pink', name: 'Rose Pink', colorHex: '#E85D8E' },
   { id: 'periwinkle', name: 'Periwinkle', colorHex: '#A7B2FA' },
   { id: 'green', name: 'Forest Green', colorHex: '#08795D' },
 ];

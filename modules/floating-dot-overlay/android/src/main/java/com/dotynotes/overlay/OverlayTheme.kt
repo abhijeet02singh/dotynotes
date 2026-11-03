@@ -36,8 +36,8 @@ data class OverlayTheme(
     val colors: OverlayColors
 ) {
     companion object {
-        private const val DEFAULT_APPEARANCE = "system"
-        private const val DEFAULT_COLOR_THEME = "purple"
+        private const val DEFAULT_APPEARANCE = "light"
+        private const val DEFAULT_COLOR_THEME = "pink"
 
         /**
          * Safely parses hex (#RRGGBB, #AARRGGBB) or rgba(r, g, b, a) into an Android Color int.
@@ -191,37 +191,37 @@ data class OverlayTheme(
 
                 "pink" -> if (isDark) {
                     OverlayColors(
-                        background = Color.parseColor("#140E13"),
-                        surface = Color.parseColor("#20161E"),
-                        surfaceSecondary = Color.parseColor("#2B1D28"),
-                        surfaceElevated = Color.parseColor("#382635"),
-                        textPrimary = Color.parseColor("#FDF2F8"),
-                        textSecondary = Color.parseColor("#B89CAD"),
-                        textMuted = Color.parseColor("#8F7385"),
-                        border = Color.parseColor("#3A2434"),
-                        divider = Color.parseColor("#301D2B"),
+                        background = Color.parseColor("#140D11"),
+                        surface = Color.parseColor("#20161C"),
+                        surfaceSecondary = Color.parseColor("#2B1E26"),
+                        surfaceElevated = Color.parseColor("#362630"),
+                        textPrimary = Color.parseColor("#FDF2F7"),
+                        textSecondary = Color.parseColor("#C4ABB8"),
+                        textMuted = Color.parseColor("#967F8D"),
+                        border = Color.parseColor("#3D2A36"),
+                        divider = Color.parseColor("#30212B"),
                         primary = Color.parseColor("#F472B6"),
                         primaryLight = Color.parseColor("#F9A8D4"),
-                        primaryDark = Color.parseColor("#EC4899"),
-                        primarySoft = Color.argb(38, 244, 114, 182),
+                        primaryDark = Color.parseColor("#E85D8E"),
+                        primarySoft = Color.argb(38, 232, 93, 142),
                         accent = Color.parseColor("#F472B6")
                     )
                 } else {
                     OverlayColors(
-                        background = Color.parseColor("#FDF4F8"),
+                        background = Color.parseColor("#FFF8FA"),
                         surface = Color.parseColor("#FFFFFF"),
-                        surfaceSecondary = Color.parseColor("#FCE7F3"),
+                        surfaceSecondary = Color.parseColor("#FCE7EF"),
                         surfaceElevated = Color.parseColor("#FFFFFF"),
-                        textPrimary = Color.parseColor("#3C0D26"),
-                        textSecondary = Color.parseColor("#6B284E"),
-                        textMuted = Color.parseColor("#8E5275"),
-                        border = Color.parseColor("#F7CCE2"),
-                        divider = Color.parseColor("#FDEAF3"),
-                        primary = Color.parseColor("#DB2777"),
+                        textPrimary = Color.parseColor("#29212A"),
+                        textSecondary = Color.parseColor("#786A73"),
+                        textMuted = Color.parseColor("#9B8C96"),
+                        border = Color.parseColor("#F0DCE4"),
+                        divider = Color.parseColor("#F0DCE4"),
+                        primary = Color.parseColor("#E85D8E"),
                         primaryLight = Color.parseColor("#F472B6"),
-                        primaryDark = Color.parseColor("#BE185D"),
-                        primarySoft = Color.parseColor("#FCE7F3"),
-                        accent = Color.parseColor("#DB2777")
+                        primaryDark = Color.parseColor("#D84378"),
+                        primarySoft = Color.parseColor("#FCE7EF"),
+                        accent = Color.parseColor("#E85D8E")
                     )
                 }
 
@@ -297,8 +297,7 @@ data class OverlayTheme(
                     )
                 }
 
-                // Default: "purple" (Doty Purple canonical brand)
-                else -> if (isDark) {
+                "purple" -> if (isDark) {
                     OverlayColors(
                         background = Color.parseColor("#101114"),
                         surface = Color.parseColor("#1B1D23"),
@@ -333,6 +332,9 @@ data class OverlayTheme(
                         accent = Color.parseColor("#6D28D9")
                     )
                 }
+
+                // Default fallback: "pink" (Rose Pink)
+                else -> getBuiltinColors("pink", isDark)
             }
         }
 

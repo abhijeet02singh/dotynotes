@@ -27,6 +27,7 @@ export default function NoteEditorModal({
   onSave,
   noteToEdit = null,
   onDelete = null,
+  onToggleArchive = null,
   defaultColor = 'purple',
 }) {
   const { theme, isDark } = useTheme();
@@ -139,10 +140,33 @@ export default function NoteEditorModal({
     setStatusText('Editing...');
   };
 
-  const handleCompleteAll = () => {
-    actionCounterRef.current += 1;
-    setEditorAction({ type: 'completeAll', id: actionCounterRef.current });
-    setStatusText('Completed ✓');
+  const handleToggleComplete = async () => {
+    if (isSubmitting || !noteToEdit || !onToggleArchive) return;
+    try {
+      setIsSubmitting(true);
+      setStatusText(noteToEdit.isArchived ? 'Restoring...' : 'Completing...');
+      const trimmedTitle = (title != null ? String(title) : '').trim();
+      const trimmedContent = (content != null ? String(content) : '').trim();
+      const trimmedTag = (tag != null ? String(tag) : '').trim();
+      const serializedContent = editorTextToHtml(trimmedContent);
+
+      await onToggleArchive(noteToEdit.id, Boolean(noteToEdit.isArchived), {
+        title: trimmedTitle || noteToEdit.title || 'Untitled Note',
+        content: serializedContent || noteToEdit.content || '',
+        tag: trimmedTag || noteToEdit.tag || 'General',
+        colorSchemeId: selectedColor || noteToEdit.colorSchemeId || 'pink',
+        isPinned: Boolean(isPinned),
+        reminderAt: reminderAt != null && !isNaN(Number(reminderAt)) ? Number(reminderAt) : null,
+      });
+
+      setStatusText(noteToEdit.isArchived ? 'Restored ✓' : 'Completed ✓');
+      onClose();
+    } catch (err) {
+      Alert.alert('Error', 'Failed to update note status: ' + (err.message || 'Unknown error'));
+      setStatusText('Error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleEditorContentChange = useCallback((event) => {
@@ -181,7 +205,7 @@ export default function NoteEditorModal({
         title: trimmedTitle || 'Untitled Note',
         content: serializedContent,
         tag: trimmedTag || 'General',
-        colorSchemeId: selectedColor || 'purple',
+        colorSchemeId: selectedColor || 'pink',
         isPinned: Boolean(isPinned),
         isArchived: Boolean(isArchived),
         reminderAt: reminderAt != null && !isNaN(Number(reminderAt)) ? Number(reminderAt) : null,
@@ -577,12 +601,14 @@ export default function NoteEditorModal({
 
                 <TouchableOpacity
                   style={[styles.completeBtn, { borderColor: currentColor.border }]}
-                  onPress={handleCompleteAll}
+                  onPress={handleToggleComplete}
                   disabled={isSubmitting}
                   accessibilityRole="button"
-                  accessibilityLabel="Mark all items complete"
+                  accessibilityLabel={noteToEdit?.isArchived ? 'Restore note to active' : 'Complete note and move to archive'}
                 >
-                  <Text style={styles.completeBtnText}>✓ Complete</Text>
+                  <Text style={styles.completeBtnText}>
+                    {noteToEdit?.isArchived ? '↺ Restore' : '✓ Complete'}
+                  </Text>
                 </TouchableOpacity>
               </>
             )}

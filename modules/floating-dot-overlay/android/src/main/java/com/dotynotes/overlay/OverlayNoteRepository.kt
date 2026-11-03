@@ -24,7 +24,9 @@ class OverlayNoteRepository private constructor(private val context: Context) {
         val isPinned: Boolean,
         val isArchived: Boolean,
         val createdAt: Long,
-        val updatedAt: Long
+        val updatedAt: Long,
+        val reminderAt: Long? = null,
+        val notificationId: String? = null
     ) {
         fun toJsonObject(): JSONObject = JSONObject().apply {
             put("id", id)
@@ -36,6 +38,16 @@ class OverlayNoteRepository private constructor(private val context: Context) {
             put("isArchived", if (isArchived) 1 else 0)
             put("createdAt", createdAt)
             put("updatedAt", updatedAt)
+            if (reminderAt != null) {
+                put("reminderAt", reminderAt)
+            } else {
+                put("reminderAt", JSONObject.NULL)
+            }
+            if (notificationId != null) {
+                put("notificationId", notificationId)
+            } else {
+                put("notificationId", JSONObject.NULL)
+            }
         }
     }
 
@@ -203,16 +215,28 @@ class OverlayNoteRepository private constructor(private val context: Context) {
             if (v is Boolean) v else obj.optInt("isArchived", 0) == 1
         } else false
 
+        val reminderAt = if (obj.has("reminderAt") && !obj.isNull("reminderAt")) {
+            val r = obj.optLong("reminderAt", 0L)
+            if (r > 0L) r else null
+        } else null
+
+        val notificationId = if (obj.has("notificationId") && !obj.isNull("notificationId")) {
+            val n = obj.optString("notificationId", "")
+            if (n.isNotBlank() && n != "null") n else null
+        } else null
+
         return OverlayNote(
             id = obj.optString("id", "note_$now"),
             title = obj.optString("title", "Quick Note"),
             content = obj.optString("content", ""),
-            colorSchemeId = obj.optString("colorSchemeId", "purple"),
+            colorSchemeId = obj.optString("colorSchemeId", "pink"),
             tag = obj.optString("tag", "General"),
             isPinned = isPinned,
             isArchived = isArchived,
             createdAt = obj.optLong("createdAt", now),
-            updatedAt = obj.optLong("updatedAt", now)
+            updatedAt = obj.optLong("updatedAt", now),
+            reminderAt = reminderAt,
+            notificationId = notificationId
         )
     }
 
@@ -250,7 +274,7 @@ class OverlayNoteRepository private constructor(private val context: Context) {
 
         // 1. Pending created/updated notes on top
         for (p in pending) {
-            if (!deletions.contains(p.id)) {
+            if (!deletions.contains(p.id) && !p.isArchived) {
                 combined.add(p)
                 seenIds.add(p.id)
             }
@@ -274,10 +298,11 @@ class OverlayNoteRepository private constructor(private val context: Context) {
     fun saveQuickNote(
         title: String,
         content: String,
-        colorSchemeId: String = "purple",
+        colorSchemeId: String = "pink",
         tag: String = "Floating",
         isPinned: Boolean = false,
-        isArchived: Boolean = false
+        isArchived: Boolean = false,
+        reminderAt: Long? = null
     ): OverlayNote? {
         return try {
             val now = System.currentTimeMillis()
@@ -286,12 +311,13 @@ class OverlayNoteRepository private constructor(private val context: Context) {
                 id = id,
                 title = title.trim().ifEmpty { "Quick Note" },
                 content = content.trim(),
-                colorSchemeId = colorSchemeId.ifEmpty { "purple" },
+                colorSchemeId = colorSchemeId.ifEmpty { "pink" },
                 tag = tag.ifEmpty { "Floating" },
                 isPinned = isPinned,
                 isArchived = isArchived,
                 createdAt = now,
-                updatedAt = now
+                updatedAt = now,
+                reminderAt = reminderAt
             )
 
             // Add to pending notes
@@ -324,23 +350,30 @@ class OverlayNoteRepository private constructor(private val context: Context) {
         colorSchemeId: String? = null,
         tag: String? = null,
         isPinned: Boolean? = null,
-        isArchived: Boolean? = null
+        isArchived: Boolean? = null,
+        reminderAt: Long? = null,
+        hasReminderAtUpdate: Boolean = false
     ): Boolean {
         return try {
             val now = System.currentTimeMillis()
             val existing = inMemoryRecentNotes.find { it.id == id }
                 ?: getPendingNotes().find { it.id == id }
 
+            val finalReminderAt = if (hasReminderAtUpdate) reminderAt else existing?.reminderAt
+            val finalNotificationId = if (hasReminderAtUpdate && reminderAt == null) null else existing?.notificationId
+
             val updatedNote = OverlayNote(
                 id = id,
                 title = title.trim().ifEmpty { "Quick Note" },
                 content = content.trim(),
-                colorSchemeId = colorSchemeId ?: existing?.colorSchemeId ?: "purple",
+                colorSchemeId = colorSchemeId ?: existing?.colorSchemeId ?: "pink",
                 tag = tag ?: existing?.tag ?: "Floating",
                 isPinned = isPinned ?: existing?.isPinned ?: false,
                 isArchived = isArchived ?: existing?.isArchived ?: false,
                 createdAt = existing?.createdAt ?: now,
-                updatedAt = now
+                updatedAt = now,
+                reminderAt = finalReminderAt,
+                notificationId = finalNotificationId
             )
 
             // Update pending notes file

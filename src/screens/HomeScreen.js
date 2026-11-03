@@ -40,6 +40,7 @@ import {
   createNoteAsync,
   updateNoteAsync,
   deleteNoteAsync,
+  toggleArchiveNoteAsync,
   flushPendingOverlayMutations,
   exportAllNotesToJsonAsync,
   getSettingAsync,
@@ -256,8 +257,17 @@ export default function HomeScreen() {
     const overlaySub = addOverlayNoteListener(() => {
       loadNotesFromDb(false);
     });
-    const mutationSub = addOverlayMutationListener(() => {
+    const mutationSub = addOverlayMutationListener((event) => {
       loadNotesFromDb(false);
+      if (event?.type === 'DELETE' && event?.data) {
+        setNoteToEdit((current) => {
+          if (current?.id === event.data) {
+            setIsEditorVisible(false);
+            return null;
+          }
+          return current;
+        });
+      }
     });
 
     return () => {
@@ -481,6 +491,56 @@ export default function HomeScreen() {
     } catch (err) {
       console.error('Error deleting note:', err);
       Alert.alert('Database Error', 'Could not delete note: ' + (err.message || ''));
+      throw err;
+    }
+  };
+
+  // Handle note archive/restore toggle
+  const handleToggleArchiveNote = async (id, currentArchived, currentNoteData = null) => {
+    try {
+      const willBeArchived = !currentArchived;
+      const targetNote = notes.find((n) => n.id === id);
+
+      // If archiving an active note with an active scheduled notification, cancel the OS alert
+      if (willBeArchived && targetNote?.notificationId) {
+        try {
+          await cancelNoteReminderAsync(targetNote.notificationId);
+        } catch (_) {}
+      }
+
+      let updated;
+      if (currentNoteData) {
+        // Also save any modifications made in the editor
+        updated = await updateNoteAsync(id, {
+          ...currentNoteData,
+          isArchived: willBeArchived,
+        });
+      } else {
+        updated = await toggleArchiveNoteAsync(id, currentArchived);
+      }
+
+      // If restoring a note that has a future reminder, reschedule it
+      if (!willBeArchived && updated?.reminderAt && Number(updated.reminderAt) > Date.now()) {
+        try {
+          const schedResult = await scheduleNoteReminderAsync({
+            noteId: updated.id,
+            title: updated.title || 'Untitled Note',
+            content: updated.content || '',
+            reminderAt: updated.reminderAt,
+          });
+          if (schedResult.success && schedResult.notificationId) {
+            updated = await updateNoteAsync(updated.id, {
+              notificationId: schedResult.notificationId,
+            });
+          }
+        } catch (_) {}
+      }
+
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      return updated;
+    } catch (err) {
+      console.error('Error toggling archive:', err);
+      Alert.alert('Database Error', 'Could not update archive status: ' + (err.message || ''));
       throw err;
     }
   };
@@ -867,6 +927,7 @@ export default function HomeScreen() {
           onSave={handleSaveNote}
           noteToEdit={noteToEdit}
           onDelete={handleDeleteNote}
+          onToggleArchive={handleToggleArchiveNote}
           defaultColor={defaultStickyColor || defaultNoteColor || 'lavender'}
         />
 
