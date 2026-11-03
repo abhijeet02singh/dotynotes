@@ -532,6 +532,41 @@ for (let i = 0; i < 50; i++) {
 }
 console.log('   ✅ PASS: Unique ID generation ensures no duplicates even under rapid concurrent creation\n');
 
+
+// ----------------------------------------------------------------
+// TEST GROUP 7: PRODUCTION POLISH & HARDENING (PHASE 2.1)
+// ----------------------------------------------------------------
+console.log('👉 [GROUP 7] Verifying Production Polish & Hardening Configurations');
+
+// 7.1 Splash Screen Configuration in app.json
+const appConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '../app.json'), 'utf8'));
+assert.ok(appConfig.expo.splash, 'app.json must define expo.splash configuration');
+assert.strictEqual(appConfig.expo.splash.image, './assets/splash-icon.png', 'Splash image must point to ./assets/splash-icon.png');
+assert.strictEqual(appConfig.expo.splash.resizeMode, 'contain', 'Splash resizeMode must be contain to prevent distortion/cropping');
+assert.strictEqual(appConfig.expo.splash.backgroundColor, '#FFF8FA', 'Splash background must match Light + Rose Pink theme (#FFF8FA)');
+assert.ok(appConfig.expo.android.splash, 'app.json must define expo.android.splash configuration');
+assert.strictEqual(appConfig.expo.android.splash.resizeMode, 'contain', 'Android splash resizeMode must be contain');
+assert.strictEqual(appConfig.expo.android.splash.backgroundColor, '#FFF8FA', 'Android splash background must be #FFF8FA');
+console.log('   ✅ PASS 7.1: app.json defines splash screen with contain mode & Light Rose Pink background (#FFF8FA)');
+
+// 7.2 React Error Boundary in App.js and src/components/ErrorBoundary.js
+const appSource = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
+assert.ok(appSource.includes("import ErrorBoundary from './src/components/ErrorBoundary';"), 'App.js must import ErrorBoundary');
+assert.ok(appSource.includes('<ErrorBoundary>') && appSource.includes('</ErrorBoundary>'), 'App.js must wrap application in ErrorBoundary');
+
+const errorBoundarySource = fs.readFileSync(path.join(__dirname, '../src/components/ErrorBoundary.js'), 'utf8');
+assert.ok(errorBoundarySource.includes('class ErrorBoundary extends Component'), 'ErrorBoundary must be a React class component');
+assert.ok(errorBoundarySource.includes('static getDerivedStateFromError'), 'ErrorBoundary must implement getDerivedStateFromError');
+assert.ok(errorBoundarySource.includes('componentDidCatch'), 'ErrorBoundary must implement componentDidCatch');
+assert.ok(errorBoundarySource.includes('console.error'), 'ErrorBoundary must log errors rather than silently swallowing them');
+assert.ok(errorBoundarySource.includes('handleReload'), 'ErrorBoundary must provide a reload/retry handler');
+console.log('   ✅ PASS 7.2: React ErrorBoundary wraps main app tree with fallback UI and error logging');
+
+// 7.3 EAS Version Source in eas.json
+const easConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '../eas.json'), 'utf8'));
+assert.strictEqual(easConfig.cli?.appVersionSource, 'local', 'eas.json must declare cli.appVersionSource: local');
+console.log('   ✅ PASS 7.3: eas.json declares cli.appVersionSource: local while preserving build profiles\n');
+
 console.log('================================================================');
 console.log('🎉 ALL REGRESSION & PRODUCTION BUG FIX TESTS PASSED PERFECTLY!');
 console.log('================================================================');

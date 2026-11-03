@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { View } from 'react-native';
 import HomeScreen from './src/screens/HomeScreen';
 import OnboardingScreen from './src/screens/OnboardingScreen';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import {
   initializeNotificationsAsync,
@@ -77,8 +78,10 @@ export default function App() {
   }, []);
 
   return (
-    <ThemeProvider>
-      <MainApp />
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <MainApp />
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
